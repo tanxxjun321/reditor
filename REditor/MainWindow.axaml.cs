@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Styling;
 
 namespace REditor;
@@ -10,7 +13,23 @@ namespace REditor;
 public partial class MainWindow : Window {
     public MainWindow() {
         InitializeComponent();
-        FooterText.Text = $"{RuntimeInformation.FrameworkDescription} · {RuntimeInformation.OSDescription}";
+
+        FooterText.Text = $"Ready · {RuntimeInformation.OSDescription}";
+
+        // 平台适配：仅在 macOS 启用自定义窗口 Chrome + Vibrancy
+        bool isMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
+        if (isMacOS) {
+            TitleBar.IsVisible = true;
+            TrafficLights.IsVisible = true;
+
+            // 启用 Vibrancy：无边框窗口 + 透明背景
+            SystemDecorations = WindowDecorations.None;
+            TransparencyLevelHint = new List<WindowTransparencyLevel> { WindowTransparencyLevel.AcrylicBlur };
+            Background = new SolidColorBrush(Colors.Transparent, 0);
+        } else {
+            TitleBar.IsVisible = false;
+            TrafficLights.IsVisible = false;
+        }
     }
 
     protected override void OnOpened(EventArgs e) {
@@ -40,8 +59,35 @@ public partial class MainWindow : Window {
     }
 
     private void UpdateThemeButton() {
-        ThemeButton.Content = ActualThemeVariant == ThemeVariant.Dark
-            ? "☀️ 浅色模式"
-            : "🌙 深色模式";
+        // 图标本身不变（太阳月亮合一）
+    }
+
+    private void OnCloseClick(object? sender, PointerPressedEventArgs e) {
+        Close();
+    }
+
+    private void OnMinimizeClick(object? sender, PointerPressedEventArgs e) {
+        WindowState = WindowState.Minimized;
+    }
+
+    private void OnMaximizeClick(object? sender, PointerPressedEventArgs e) {
+        WindowState = WindowState == WindowState.Maximized
+            ? WindowState.Normal
+            : WindowState.Maximized;
+    }
+
+    private void OnTitleBarPointerPressed(object? sender, PointerPressedEventArgs e) {
+        // 双击最大化/还原
+        if (e.ClickCount == 2) {
+            WindowState = WindowState == WindowState.Maximized
+                ? WindowState.Normal
+                : WindowState.Maximized;
+            return;
+        }
+
+        // 拖拽移动窗口
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) {
+            BeginMoveDrag(e);
+        }
     }
 }

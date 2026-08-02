@@ -2,104 +2,188 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="840" d:DesignHeight="560"
+        mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="600"
         x:Class="REditor.MainWindow"
-        Width="840" Height="560" MinWidth="520" MinHeight="440"
-        Background="{DynamicResource SystemControlPageBackgroundChromeLowBrush}"
+        Width="960" Height="600" MinWidth="600" MinHeight="440"
         Title="REditor">
-
-    <Window.Styles>
-        <!-- 卡片容器 -->
-        <Style Selector="Border.card">
-            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeWhiteBrush}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="8"/>
-        </Style>
-        <!-- 次级说明文字 -->
-        <Style Selector="TextBlock.caption">
-            <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-        </Style>
-        <!-- 强调色主按钮 -->
-        <Style Selector="Button.primary">
-            <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
-            <Setter Property="Foreground" Value="White"/>
-            <Setter Property="Padding" Value="20,8"/>
-        </Style>
-        <Style Selector="Button.primary:pointerover">
-            <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAltAccentBrush}"/>
-        </Style>
-    </Window.Styles>
 
     <Grid RowDefinitions="Auto,*,Auto">
 
-        <!-- 顶部标题栏 -->
-        <Border Padding="24,16"
+        <!-- ========== 自定义标题栏 ========== -->
+        <Border x:Name="TitleBar" Height="38"
+                Background="Transparent"
                 BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
-                BorderThickness="0,0,0,1">
-            <DockPanel>
-                <Button x:Name="ThemeButton" DockPanel.Dock="Right"
-                        VerticalAlignment="Center" Click="OnToggleTheme"/>
-                <StackPanel>
-                    <TextBlock Text="REditor" FontSize="20" FontWeight="SemiBold"/>
-                    <TextBlock Classes="caption" Text="Avalonia + .NET 跨平台桌面应用" FontSize="12"/>
+                BorderThickness="0,0,0,0.5"
+                PointerPressed="OnTitleBarPointerPressed">
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <!-- 交通灯按钮（仅 macOS） -->
+                <StackPanel x:Name="TrafficLights" Grid.Column="0"
+                            Orientation="Horizontal" Spacing="8"
+                            Margin="16,0,0,0" VerticalAlignment="Center">
+                    <Ellipse x:Name="CloseButton" Width="12" Height="12"
+                             Fill="#FF5F57" Cursor="Hand"
+                             Classes="traffic-light"
+                             PointerPressed="OnCloseClick"/>
+                    <Ellipse x:Name="MinimizeButton" Width="12" Height="12"
+                             Fill="#FFBD2E" Cursor="Hand"
+                             Classes="traffic-light"
+                             PointerPressed="OnMinimizeClick"/>
+                    <Ellipse x:Name="MaximizeButton" Width="12" Height="12"
+                             Fill="#28C840" Cursor="Hand"
+                             Classes="traffic-light"
+                             PointerPressed="OnMaximizeClick"/>
                 </StackPanel>
-            </DockPanel>
+
+                <!-- 标题 -->
+                <TextBlock Grid.Column="1" Text="REditor"
+                           VerticalAlignment="Center" HorizontalAlignment="Center"
+                           FontSize="13" FontWeight="Medium"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+
+                <!-- 工具栏按钮 -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4"
+                            Margin="0,0,16,0" VerticalAlignment="Center">
+                    <Button x:Name="ThemeButton"
+                            Classes="icon-button"
+                            Click="OnToggleTheme">
+                        <PathIcon Data="{DynamicResource IconSunMoon}"
+                                  Width="16" Height="16"
+                                  Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                    </Button>
+                </StackPanel>
+            </Grid>
         </Border>
 
-        <!-- 内容区 -->
-        <ScrollViewer Grid.Row="1">
-            <StackPanel MaxWidth="640" Margin="24" Spacing="16">
+        <!-- ========== 主体区域 ========== -->
+        <Grid Grid.Row="1" ColumnDefinitions="220,*">
 
-                <Border Classes="card" Padding="24">
-                    <StackPanel Spacing="12">
-                        <TextBlock Text="欢迎使用" FontSize="18" FontWeight="SemiBold"/>
-                        <TextBlock Classes="caption" TextWrapping="Wrap"
-                                   Text="这是一个使用 Fluent 主题与主题资源构建的示例界面，会跟随系统的浅色 / 深色模式自动切换配色。"/>
-                        <TextBox x:Name="InputBox" PlaceholderText="在这里输入一些文字…"/>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button Classes="primary" Content="确定" Click="OnGreetClicked"/>
-                            <Button Content="清空" Padding="20,8" Click="OnClearClicked"/>
-                        </StackPanel>
-                        <Border x:Name="OutputCard" IsVisible="False"
-                                Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
-                                CornerRadius="6" Padding="14,12">
-                            <TextBlock x:Name="OutputText" TextWrapping="Wrap" FontSize="15"/>
+            <!-- 侧边栏：macOS 使用 Vibrancy 毛玻璃，Windows 使用纯色 -->
+            <DockPanel x:Name="Sidebar" Classes="sidebar">
+                    <!-- Logo + 应用名 -->
+                    <StackPanel DockPanel.Dock="Top" Margin="20,48,20,16">
+                        <Border Width="36" Height="36" CornerRadius="10"
+                                Background="{DynamicResource SystemControlHighlightAccentBrush}"
+                                HorizontalAlignment="Left">
+                            <PathIcon Data="{DynamicResource IconFileText}"
+                                      Width="20" Height="20" Foreground="White"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
+                        <TextBlock Text="REditor" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
+                                   Margin="0,12,0,0"/>
+                        <TextBlock Text="跨平台文本编辑器" FontSize="11"
+                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                                   Margin="0,2,0,0"/>
                     </StackPanel>
-                </Border>
 
-                <Border Classes="card" Padding="20">
-                    <Grid ColumnDefinitions="*,*,*">
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="🖥️" FontSize="20"/>
-                            <TextBlock Text="跨平台" FontWeight="SemiBold"/>
-                            <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
-                                       Text="Windows、macOS、Linux 共用一套代码"/>
-                        </StackPanel>
-                        <StackPanel Grid.Column="1" Spacing="4">
-                            <TextBlock Text="🎨" FontSize="20"/>
-                            <TextBlock Text="Fluent 主题" FontWeight="SemiBold"/>
-                            <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
-                                       Text="内置 Fluent 设计风格的控件与配色"/>
-                        </StackPanel>
-                        <StackPanel Grid.Column="2" Spacing="4">
-                            <TextBlock Text="🌗" FontSize="20"/>
-                            <TextBlock Text="深浅色模式" FontWeight="SemiBold"/>
-                            <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
-                                       Text="点击右上角按钮即可切换主题"/>
-                        </StackPanel>
-                    </Grid>
-                </Border>
+                    <!-- 导航菜单 -->
+                    <ListBox Classes="nav-list" Background="Transparent" BorderThickness="0"
+                             Margin="0,8">
+                        <ListBoxItem Classes="nav-item" IsSelected="True">
+                            <StackPanel Orientation="Horizontal" Spacing="12">
+                                <PathIcon Data="{DynamicResource IconFileText}" Width="16" Height="16"
+                                          Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                                <TextBlock Text="编辑" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </ListBoxItem>
+                        <ListBoxItem Classes="nav-item">
+                            <StackPanel Orientation="Horizontal" Spacing="12">
+                                <PathIcon Data="{DynamicResource IconFolderOpen}" Width="16" Height="16"
+                                          Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                                <TextBlock Text="文件" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </ListBoxItem>
+                        <ListBoxItem Classes="nav-item">
+                            <StackPanel Orientation="Horizontal" Spacing="12">
+                                <PathIcon Data="{DynamicResource IconSettings}" Width="16" Height="16"
+                                          Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                                <TextBlock Text="设置" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </ListBoxItem>
+                    </ListBox>
+            </DockPanel>
 
-            </StackPanel>
-        </ScrollViewer>
+            <!-- 主内容区 -->
+            <ScrollViewer Grid.Column="1" Name="MainScroll">
+                <StackPanel MaxWidth="640" Margin="32" Spacing="16">
 
-        <!-- 底部状态栏 -->
-        <Border Grid.Row="2" Padding="24,10"
-                BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
-                BorderThickness="0,1,0,0">
-            <TextBlock x:Name="FooterText" Classes="caption" FontSize="12"/>
+                    <Border Classes="card">
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="欢迎使用" FontSize="18" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                            <TextBlock Classes="caption" TextWrapping="Wrap"
+                                       Text="REditor 是一个基于 Avalonia + .NET 的跨平台桌面编辑器，支持 macOS 和 Windows，具备现代化的界面设计。"/>
+                            <TextBox x:Name="InputBox" PlaceholderText="在这里输入一些文字…"/>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Classes="primary" Content="确定" Click="OnGreetClicked"/>
+                                <Button Content="清空" Padding="20,8" Click="OnClearClicked"
+                                        CornerRadius="{DynamicResource TokenRadiusMD}"/>
+                            </StackPanel>
+                            <Border x:Name="OutputCard" IsVisible="False"
+                                    Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
+                                    CornerRadius="6" Padding="14,12">
+                                <TextBlock x:Name="OutputText" TextWrapping="Wrap" FontSize="15"/>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Classes="card">
+                        <Grid ColumnDefinitions="*,*,*">
+                            <StackPanel Spacing="6">
+                                <Border Width="32" Height="32" CornerRadius="8"
+                                        Background="#E8F4FD"
+                                        HorizontalAlignment="Left">
+                                    <PathIcon Data="{DynamicResource IconMonitor}" Width="18" Height="18"
+                                              Foreground="#007AFF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="跨平台" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                                <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
+                                           Text="Windows、macOS、Linux 共用一套代码"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Spacing="6">
+                                <Border Width="32" Height="32" CornerRadius="8"
+                                        Background="#F0EDF9"
+                                        HorizontalAlignment="Left">
+                                    <PathIcon Data="{DynamicResource IconPalette}" Width="18" Height="18"
+                                              Foreground="#5856D6" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="现代主题" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                                <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
+                                           Text="Vibrancy 毛玻璃 + Fluent 设计语言"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Spacing="6">
+                                <Border Width="32" Height="32" CornerRadius="8"
+                                        Background="#FFF4E5"
+                                        HorizontalAlignment="Left">
+                                    <PathIcon Data="{DynamicResource IconSunMoon}" Width="18" Height="18"
+                                              Foreground="#FF9500" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <TextBlock Text="深浅色模式" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                                <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
+                                           Text="自动跟随系统，支持手动切换"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+
+        <!-- ========== 底部状态栏 ========== -->
+        <Border Grid.Row="2" Classes="statusbar">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="16">
+                    <TextBlock x:Name="FooterText" Classes="caption" VerticalAlignment="Center"/>
+                    <TextBlock Classes="caption" VerticalAlignment="Center" Text="UTF-8"/>
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="16">
+                    <TextBlock Classes="caption" VerticalAlignment="Center" Text="Ln 1, Col 1"/>
+                    <TextBlock Classes="caption" VerticalAlignment="Center" Text="Avalonia 12"/>
+                </StackPanel>
+            </DockPanel>
         </Border>
 
     </Grid>
