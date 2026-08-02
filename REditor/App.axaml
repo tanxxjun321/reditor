@@ -163,10 +163,5 @@
             <Setter Property="BorderThickness" Value="0,1,0,0"/>
             <Setter Property="Padding" Value="16,6"/>
         </Style>
-
-        <!-- 交通灯按钮 hover 效果 -->
-        <Style Selector="Ellipse.traffic-light:pointerover">
-            <Setter Property="Opacity" Value="0.75"/>
-        </Style>
     </Application.Styles>
 </Application>

@@ -10,38 +10,20 @@
     <Grid RowDefinitions="Auto,*,Auto">
 
         <!-- ========== 自定义标题栏 ========== -->
-        <Border x:Name="TitleBar" Height="38"
+        <Border x:Name="TitleBar" Height="28"
                 Background="Transparent"
                 BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
                 BorderThickness="0,0,0,0.5"
                 PointerPressed="OnTitleBarPointerPressed">
-            <Grid ColumnDefinitions="Auto,*,Auto">
-                <!-- 交通灯按钮（仅 macOS） -->
-                <StackPanel x:Name="TrafficLights" Grid.Column="0"
-                            Orientation="Horizontal" Spacing="8"
-                            Margin="16,0,0,0" VerticalAlignment="Center">
-                    <Ellipse x:Name="CloseButton" Width="12" Height="12"
-                             Fill="#FF5F57" Cursor="Hand"
-                             Classes="traffic-light"
-                             PointerPressed="OnCloseClick"/>
-                    <Ellipse x:Name="MinimizeButton" Width="12" Height="12"
-                             Fill="#FFBD2E" Cursor="Hand"
-                             Classes="traffic-light"
-                             PointerPressed="OnMinimizeClick"/>
-                    <Ellipse x:Name="MaximizeButton" Width="12" Height="12"
-                             Fill="#28C840" Cursor="Hand"
-                             Classes="traffic-light"
-                             PointerPressed="OnMaximizeClick"/>
-                </StackPanel>
-
+            <Grid ColumnDefinitions="*,Auto">
                 <!-- 标题 -->
-                <TextBlock Grid.Column="1" Text="REditor"
+                <TextBlock Grid.Column="0" Text="REditor"
                            VerticalAlignment="Center" HorizontalAlignment="Center"
                            FontSize="13" FontWeight="Medium"
                            Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
 
                 <!-- 工具栏按钮 -->
-                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4"
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4"
                             Margin="0,0,16,0" VerticalAlignment="Center">
                     <Button x:Name="ThemeButton"
                             Classes="icon-button"

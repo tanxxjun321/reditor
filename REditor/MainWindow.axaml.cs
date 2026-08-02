@@ -16,19 +16,20 @@ public partial class MainWindow : Window {
 
         FooterText.Text = $"Ready · {RuntimeInformation.OSDescription}";
 
-        // 平台适配：仅在 macOS 启用自定义窗口 Chrome + Vibrancy
+        // 平台适配：仅在 macOS 启用扩展标题栏 + Vibrancy
         bool isMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
         if (isMacOS) {
             TitleBar.IsVisible = true;
-            TrafficLights.IsVisible = true;
 
-            // 启用 Vibrancy：无边框窗口 + 透明背景
-            SystemDecorations = WindowDecorations.None;
+            // macOS 原生方案：保留 NSWindow（自带圆角、阴影、描边、交通灯按钮），
+            // 内容扩展到标题栏，Vibrancy 用窗口级 AcrylicBlur，系统会把它裁剪到原生圆角内。
+            // （控件级 ExperimentalAcrylicBorder 在 macOS 上没有模糊实现，不可用。）
+            ExtendClientAreaToDecorationsHint = true;
+            ExtendClientAreaTitleBarHeightHint = 28;
             TransparencyLevelHint = new List<WindowTransparencyLevel> { WindowTransparencyLevel.AcrylicBlur };
             Background = new SolidColorBrush(Colors.Transparent, 0);
         } else {
             TitleBar.IsVisible = false;
-            TrafficLights.IsVisible = false;
         }
     }
 
@@ -60,20 +61,6 @@ public partial class MainWindow : Window {
 
     private void UpdateThemeButton() {
         // 图标本身不变（太阳月亮合一）
-    }
-
-    private void OnCloseClick(object? sender, PointerPressedEventArgs e) {
-        Close();
-    }
-
-    private void OnMinimizeClick(object? sender, PointerPressedEventArgs e) {
-        WindowState = WindowState.Minimized;
-    }
-
-    private void OnMaximizeClick(object? sender, PointerPressedEventArgs e) {
-        WindowState = WindowState == WindowState.Maximized
-            ? WindowState.Normal
-            : WindowState.Maximized;
     }
 
     private void OnTitleBarPointerPressed(object? sender, PointerPressedEventArgs e) {
