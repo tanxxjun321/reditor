@@ -1,0 +1,12 @@
+root = true
+
+[*]
+indent_style = space
+indent_size = 4
+
+[*.cs]
+# 大括号不单独占一行（K&R 风格）
+csharp_new_line_before_open_brace = none
+csharp_new_line_before_else = false
+csharp_new_line_before_catch = false
+csharp_new_line_before_finally = false

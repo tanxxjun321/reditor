@@ -1,0 +1,106 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="840" d:DesignHeight="560"
+        x:Class="REditor.MainWindow"
+        Width="840" Height="560" MinWidth="520" MinHeight="440"
+        Background="{DynamicResource SystemControlPageBackgroundChromeLowBrush}"
+        Title="REditor">
+
+    <Window.Styles>
+        <!-- 卡片容器 -->
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeWhiteBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+        </Style>
+        <!-- 次级说明文字 -->
+        <Style Selector="TextBlock.caption">
+            <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+        </Style>
+        <!-- 强调色主按钮 -->
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Padding" Value="20,8"/>
+        </Style>
+        <Style Selector="Button.primary:pointerover">
+            <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAltAccentBrush}"/>
+        </Style>
+    </Window.Styles>
+
+    <Grid RowDefinitions="Auto,*,Auto">
+
+        <!-- 顶部标题栏 -->
+        <Border Padding="24,16"
+                BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+                BorderThickness="0,0,0,1">
+            <DockPanel>
+                <Button x:Name="ThemeButton" DockPanel.Dock="Right"
+                        VerticalAlignment="Center" Click="OnToggleTheme"/>
+                <StackPanel>
+                    <TextBlock Text="REditor" FontSize="20" FontWeight="SemiBold"/>
+                    <TextBlock Classes="caption" Text="Avalonia + .NET 跨平台桌面应用" FontSize="12"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- 内容区 -->
+        <ScrollViewer Grid.Row="1">
+            <StackPanel MaxWidth="640" Margin="24" Spacing="16">
+
+                <Border Classes="card" Padding="24">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="欢迎使用" FontSize="18" FontWeight="SemiBold"/>
+                        <TextBlock Classes="caption" TextWrapping="Wrap"
+                                   Text="这是一个使用 Fluent 主题与主题资源构建的示例界面，会跟随系统的浅色 / 深色模式自动切换配色。"/>
+                        <TextBox x:Name="InputBox" PlaceholderText="在这里输入一些文字…"/>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Classes="primary" Content="确定" Click="OnGreetClicked"/>
+                            <Button Content="清空" Padding="20,8" Click="OnClearClicked"/>
+                        </StackPanel>
+                        <Border x:Name="OutputCard" IsVisible="False"
+                                Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
+                                CornerRadius="6" Padding="14,12">
+                            <TextBlock x:Name="OutputText" TextWrapping="Wrap" FontSize="15"/>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <Border Classes="card" Padding="20">
+                    <Grid ColumnDefinitions="*,*,*">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="🖥️" FontSize="20"/>
+                            <TextBlock Text="跨平台" FontWeight="SemiBold"/>
+                            <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
+                                       Text="Windows、macOS、Linux 共用一套代码"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Spacing="4">
+                            <TextBlock Text="🎨" FontSize="20"/>
+                            <TextBlock Text="Fluent 主题" FontWeight="SemiBold"/>
+                            <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
+                                       Text="内置 Fluent 设计风格的控件与配色"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Spacing="4">
+                            <TextBlock Text="🌗" FontSize="20"/>
+                            <TextBlock Text="深浅色模式" FontWeight="SemiBold"/>
+                            <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
+                                       Text="点击右上角按钮即可切换主题"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 底部状态栏 -->
+        <Border Grid.Row="2" Padding="24,10"
+                BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+                BorderThickness="0,1,0,0">
+            <TextBlock x:Name="FooterText" Classes="caption" FontSize="12"/>
+        </Border>
+
+    </Grid>
+</Window>
