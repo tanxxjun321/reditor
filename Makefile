@@ -1,7 +1,10 @@
-.PHONY: run build win mac mac-x64
+.PHONY: run build win mac mac-x64 bridge
 
 run:
 	dotnet run --project REditor
+
+bridge:
+	./native/build.sh
 
 build:
 	./build.sh

@@ -10,6 +10,27 @@ dotnet build      # 编译
 dotnet run        # 运行
 ```
 
+## iPhone 投屏(AirPlay 接收端,仅 macOS)
+
+应用内置 AirPlay 接收器:侧边栏「投屏」→「开始接收」后,iPhone(与 Mac 同一
+WiFi)在 控制中心 → 屏幕镜像 中选择「REditor」,画面和声音即显示在应用窗口内。
+
+实现方式:原生桥 `native/`(C/ObjC++)封装了 [UxPlay](https://github.com/FDH2/UxPlay)
+的协议核心(vendored 于 `native/uxplay/`,GPLv3)与 GStreamer 渲染管线
+(osxvideosink 硬解渲染进 Avalonia `NativeControlHost` 托管的 NSView,osxaudiosink
+播放声音),C# 侧通过 P/Invoke 调用(`REditor/AirPlay/`)。
+
+**首次构建原生桥需要 Homebrew 依赖:**
+
+```bash
+brew install cmake pkg-config gstreamer gst-plugins-base gst-plugins-good \
+    gst-plugins-bad gst-libav libplist openssl@3
+make bridge        # 或 ./native/build.sh,生成 native/build/libairplaybridge.dylib
+```
+
+注意:UxPlay 为 GPLv3 许可,链接它的 REditor 分发时需以 GPL 兼容方式开源。
+首次使用如 iPhone 搜不到设备,请检查 系统设置 → 隐私与安全性 → 本地网络 权限。
+
 ## 发布（打包）
 
 ```bash

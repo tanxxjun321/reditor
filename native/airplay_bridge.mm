@@ -1,0 +1,508 @@
+/*
+ * airplay_bridge.mm — AirPlay receiver bridge for REditor.
+ *
+ * Wraps the UxPlay core (native/uxplay/lib, GPLv3/LGPL-2.1+) and its
+ * GStreamer renderers (native/uxplay/renderers, GPLv3) behind a small C API.
+ * Wiring below is a reduced version of uxplay.cpp: mirroring (H.264) +
+ * AAC/ALAC audio only, no HLS, no cover-art rendering.
+ *
+ * Rendering: the video pipeline uses osxvideosink; the renderer's
+ * GstVideoOverlay sync handler embeds it into the NSView supplied through
+ * airplay_set_video_view(). Audio plays via osxaudiosink.
+ */
+
+#import <Cocoa/Cocoa.h>
+
+#include <atomic>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <gst/gst.h>
+
+#include "airplay_bridge.h"
+
+extern "C" {
+#include "uxplay/lib/raop.h"
+#include "uxplay/lib/dnssd.h"
+#include "uxplay/lib/logger.h"
+#include "uxplay/lib/crypto.h"     /* get_random_bytes */
+#include "uxplay/renderers/video_renderer.h"
+#include "uxplay/renderers/audio_renderer.h"
+}
+
+/* ------------------------------------------------------------------ state */
+
+static std::atomic<bool>  g_running{false};
+static ap_event_cb        g_event_cb = nullptr;
+static void              *g_event_ctx = nullptr;
+
+static raop_t            *g_raop = nullptr;
+static dnssd_t           *g_dnssd = nullptr;
+static logger_t          *g_logger = nullptr;
+
+static GMainLoop         *g_loop = nullptr;      /* only touched by loop thread + stop */
+static std::thread        g_loop_thread;
+static guint              g_video_watch = 0;
+static guint              g_audio_watch0 = 0;
+static guint              g_audio_watch1 = 0;
+
+static std::atomic<int>   g_open_connections{0};
+static uint64_t           g_clock_offset = 0;    /* remote->local NTP offset   */
+static double             g_volume = 1.0;        /* GStreamer linear volume    */
+
+static bool               g_audio_sync = true;
+static bool               g_video_sync = false;  /* "-vsync no": recommended on macOS */
+
+static void              *g_video_view = nullptr; /* NSView* from Avalonia     */
+static std::string        g_server_name;
+
+/* ------------------------------------------------------------- utilities */
+
+static void emit(ap_event_t ev, const char *info = nullptr, int w = 0, int h = 0) {
+    ap_event_cb cb = g_event_cb;
+    if (cb) cb(g_event_ctx, ev, info, w, h);
+}
+
+static void bridge_log_callback(void *cls, int level, const char *msg) {
+    (void) cls; (void) level;
+    if (msg) emit(AP_EV_LOG, msg);
+}
+
+static std::string config_dir() {
+    const char *home = getenv("HOME");
+    std::string dir = (home ? home : ".");
+    dir += "/Library/Application Support/REditor";
+    return dir;
+}
+
+/* persistent random (locally-administered) MAC = stable AirPlay device id */
+static std::string load_or_create_mac() {
+    std::string dir = config_dir();
+    std::string path = dir + "/airplay_device_id";
+    if (FILE *f = fopen(path.c_str(), "r")) {
+        char buf[32] = {0};
+        if (fgets(buf, sizeof(buf), f) && strlen(buf) >= 17) {
+            fclose(f);
+            return std::string(buf, 17);
+        }
+        fclose(f);
+    }
+    unsigned char rnd[6];
+    get_random_bytes(rnd, sizeof(rnd));
+    rnd[0] = (rnd[0] & ~0x01) | 0x02;   /* locally administered, unicast */
+    char mac[18];
+    snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
+             rnd[0], rnd[1], rnd[2], rnd[3], rnd[4], rnd[5]);
+    std::string cmd = "mkdir -p \"" + dir + "\"";
+    if (system(cmd.c_str()) == 0) {
+        if (FILE *f = fopen(path.c_str(), "w")) {
+            fputs(mac, f);
+            fclose(f);
+        }
+    }
+    return std::string(mac);
+}
+
+static std::vector<char> parse_hw_addr(const std::string &str) {
+    std::vector<char> hw;
+    for (size_t i = 0; i + 1 < str.length(); i += 3)
+        hw.push_back((char) strtol(str.substr(i, 2).c_str(), nullptr, 16));
+    return hw;
+}
+
+/* ------------------------------------------------------- renderer control */
+
+static void start_video_renderer() {
+    videoflip_t flips[2] = { NONE, NONE };
+    video_renderer_init(g_logger, g_server_name.c_str(), flips,
+                        "h264parse", /* rtp_pipeline */ "",
+                        /* decoder */ "decodebin", /* converter */ "videoconvert",
+                        "osxvideosink", /* sink options */ "",
+                        /* fullscreen */ false, g_video_sync,
+                        /* h265 */ false, /* coverart */ false,
+                        /* playbin_version */ 3, /* uri */ nullptr);
+    if (g_video_view)
+        video_renderer_set_window_handle((uintptr_t) g_video_view);
+    video_renderer_start();
+}
+
+/* Runs on the GLib loop thread: rebuild the mirror pipeline after a reset. */
+static gboolean rebuild_video_cb(gpointer) {
+    if (!g_running) return G_SOURCE_REMOVE;
+    if (g_video_watch) { g_source_remove(g_video_watch); g_video_watch = 0; }
+    video_renderer_stop();
+    video_renderer_destroy();
+    start_video_renderer();
+    g_clock_offset = 0;
+    if (g_loop)
+        g_video_watch = video_renderer_listen(g_loop, 0);
+    return G_SOURCE_REMOVE;
+}
+
+static void request_video_rebuild() {
+    if (g_loop) {
+        GMainContext *ctx = g_main_loop_get_context(g_loop);
+        if (ctx) g_idle_add(rebuild_video_cb, nullptr);
+    }
+}
+
+/* ------------------------------------------------------------ raop cbs */
+
+extern "C" {
+
+static void cb_conn_init(void *cls) {
+    (void) cls;
+    g_open_connections++;
+}
+
+static void cb_conn_destroy(void *cls) {
+    (void) cls;
+    if (g_open_connections > 0) g_open_connections--;
+    if (g_open_connections == 0) {
+        g_clock_offset = 0;
+        audio_renderer_stop();
+        emit(AP_EV_DISCONNECTED);
+    }
+}
+
+static void cb_conn_feedback(void *cls) { (void) cls; }
+
+static void cb_conn_reset(void *cls, int reason) {
+    (void) cls;
+    emit(AP_EV_ERROR, reason == 1 ? "lost connection with client"
+                                  : "connection reset");
+    request_video_rebuild();
+}
+
+static void cb_video_reset(void *cls, reset_type_t type) {
+    (void) cls;
+    switch (type) {
+    case RESET_TYPE_NOHOLD:
+    case RESET_TYPE_RTP_SHUTDOWN:
+        request_video_rebuild();
+        break;
+    default:
+        break;
+    }
+}
+
+static int cb_video_set_codec_and_size(void *cls, video_codec_t codec,
+                                       unsigned short width_source, unsigned short height_source,
+                                       unsigned short x_offset, unsigned short y_offset,
+                                       unsigned short width, unsigned short height) {
+    (void) cls;
+    video_geometry_t geom;
+    geom.width_source = width_source;
+    geom.height_source = height_source;
+    geom.x_offset = x_offset;
+    geom.y_offset = y_offset;
+    geom.width = width;
+    geom.height = height;
+    emit(AP_EV_VIDEO_SIZE, nullptr, (int) width, (int) height);
+    return video_renderer_choose_codec_and_size(false, codec == VIDEO_CODEC_H265, &geom);
+}
+
+static void cb_video_process(void *cls, raop_ntp_t *ntp, video_decode_struct *data) {
+    (void) cls; (void) ntp;
+    if (!g_running) return;
+    if (!g_clock_offset) {
+        uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
+        g_clock_offset = local - data->ntp_time_remote;
+    }
+    int count = 0;
+    uint64_t pts_mismatch = 0;
+    do {
+        data->ntp_time_remote += g_clock_offset;
+        pts_mismatch = video_renderer_render_buffer(data->data, &data->data_len,
+                                                    &data->nal_count, &data->ntp_time_remote);
+        if (pts_mismatch) g_clock_offset += pts_mismatch;
+        count++;
+    } while (pts_mismatch && count < 10);
+}
+
+static void cb_video_pause(void *cls)  { (void) cls; video_renderer_pause();  }
+static void cb_video_resume(void *cls) { (void) cls; video_renderer_resume(); }
+static void cb_video_flush(void *cls)  { (void) cls; video_renderer_flush();  }
+
+static void cb_audio_process(void *cls, raop_ntp_t *ntp, audio_decode_struct *data) {
+    (void) cls; (void) ntp;
+    if (!g_running) return;
+    if (!g_clock_offset) {
+        uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
+        g_clock_offset = local - data->ntp_time_remote;
+    }
+    data->ntp_time_remote += g_clock_offset;
+    audio_renderer_render_buffer(data->data, &data->data_len, &data->seqnum,
+                                 &data->ntp_time_remote);
+}
+
+static void cb_audio_flush(void *cls) { (void) cls; audio_renderer_flush(); }
+
+static double cb_audio_set_client_volume(void *cls) {
+    (void) cls;
+    /* AirPlay dB in [-30, 0]; map our linear volume back to that range */
+    return g_volume <= 0.0 ? -30.0 : 30.0 * (g_volume - 1.0);
+}
+
+static void cb_audio_set_volume(void *cls, float volume) {
+    (void) cls;
+    double frac;
+    if (volume <= -144.0f)      frac = 0.0;              /* AirPlay "mute" */
+    else if (volume <= -30.0f)  frac = 0.0;
+    else if (volume >= 0.0f)    frac = 1.0;
+    else                        frac = (30.0f + volume) / 30.0f;
+    /* dB-linear mapping, -30 dB floor (matches uxplay's default curve) */
+    g_volume = frac <= 0.0 ? 0.0 : pow(10.0, 0.05 * (-30.0 + 30.0 * frac));
+    audio_renderer_set_volume(g_volume);
+}
+
+static void cb_audio_get_format(void *cls, unsigned char *ct, unsigned short *spf,
+                                bool *usingScreen, bool *isMedia, uint64_t *audioFormat) {
+    (void) cls; (void) spf; (void) usingScreen; (void) isMedia; (void) audioFormat;
+    audio_renderer_start(ct);
+}
+
+static void cb_report_client_request(void *cls, char *deviceid, char *model,
+                                     char *name, bool *admit) {
+    (void) cls; (void) deviceid;
+    *admit = true;
+    video_renderer_set_device_model(model, name);
+    emit(AP_EV_CONNECTED, name);
+}
+
+static void cb_register_client(void *cls, const char *device_id,
+                               const char *pk_str, const char *name) {
+    (void) cls; (void) device_id; (void) pk_str; (void) name;
+}
+
+static bool cb_check_register(void *cls, const char *pk_str) {
+    (void) cls; (void) pk_str;
+    return true;
+}
+
+static const char *cb_passwd(void *cls, int *len) {
+    (void) cls;
+    *len = 0;                    /* no access control */
+    return nullptr;
+}
+
+static void cb_display_pin(void *cls, char *pin) {
+    (void) cls;
+    emit(AP_EV_LOG, pin);
+}
+
+/* ---------------------------------------------------- GLib loop thread */
+
+static void loop_thread_fn() {
+    while (g_running) {
+        g_loop = g_main_loop_new(nullptr, FALSE);
+        g_video_watch  = video_renderer_listen(g_loop, 0);
+        g_audio_watch0 = audio_renderer_listen(g_loop, 0);
+        g_audio_watch1 = audio_renderer_listen(g_loop, 1);
+        g_main_loop_run(g_loop);   /* returns on pipeline error or stop */
+
+        if (g_video_watch)  { g_source_remove(g_video_watch);  g_video_watch = 0; }
+        if (g_audio_watch0) { g_source_remove(g_audio_watch0); g_audio_watch0 = 0; }
+        if (g_audio_watch1) { g_source_remove(g_audio_watch1); g_audio_watch1 = 0; }
+        g_main_loop_unref(g_loop);
+        g_loop = nullptr;
+
+        if (g_running) {
+            /* video pipeline errored (uxplay's bus watch quits the loop):
+             * rebuild it and keep serving */
+            emit(AP_EV_ERROR, "video pipeline reset");
+            video_renderer_stop();
+            video_renderer_destroy();
+            start_video_renderer();
+            g_clock_offset = 0;
+        }
+    }
+}
+
+} /* extern "C" */
+
+/* ----------------------------------------------------------- public API */
+
+extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx) {
+    if (g_running.exchange(true))
+        return -1;
+
+    g_event_cb = cb;
+    g_event_ctx = ctx;
+    g_server_name = (server_name && *server_name) ? server_name : "REditor";
+
+    if (!gstreamer_init()) {
+        emit(AP_EV_ERROR, "GStreamer initialization failed (missing plugins?)");
+        g_running = false;
+        return -2;
+    }
+
+    g_logger = logger_init();
+    logger_set_level(g_logger, LOGGER_INFO);
+    logger_set_callback(g_logger, bridge_log_callback, nullptr);
+
+    audio_renderer_init(g_logger, "osxaudiosink", &g_audio_sync, &g_video_sync, "");
+    start_video_renderer();
+
+    /* persistent device identity + pairing key */
+    std::string mac = load_or_create_mac();
+    std::string dir = config_dir();
+    std::string keyfile = dir + "/airplay.pem";
+    std::vector<char> hw_addr = parse_hw_addr(mac);
+
+    /* service discovery via Apple Bonjour (dns_sd) */
+    int dnssd_error = 0;
+    g_dnssd = dnssd_init(g_server_name.c_str(), (int) g_server_name.length(),
+                         hw_addr.data(), (int) hw_addr.size(), /* pin_pw */ 0,
+                         &dnssd_error);
+    if (!g_dnssd || dnssd_error) {
+        emit(AP_EV_ERROR, "failed to initialize Bonjour service discovery");
+        airplay_stop();
+        return -3;
+    }
+
+    /* advertised feature set (uxplay defaults, HLS/h265 off) */
+    static const int8_t features[32] = {
+        0, 1, 1, 0, 0, 1, 1, 1,   /*  0-7 : mirroring, photos, slideshow ...  */
+        0, 1, 1, 1, 1, 1, 1, 1,   /*  8-15: audio, FairPlay, metadata ...     */
+        1, 1, 1, 1, 1, 1, 1, 0,   /* 16-23: audio formats, auth ...           */
+        0, 1, 0, 1, 1, 0, 1, 0    /* 24-31: legacy pairing, RAOP support      */
+    };
+    for (int i = 0; i < 32; i++)
+        dnssd_set_airplay_features(g_dnssd, i, features[i]);
+
+    /* RAOP / AirPlay server */
+    raop_callbacks_t cbs;
+    memset(&cbs, 0, sizeof(cbs));
+    cbs.cls = nullptr;
+    cbs.conn_init = cb_conn_init;
+    cbs.conn_destroy = cb_conn_destroy;
+    cbs.conn_feedback = cb_conn_feedback;
+    cbs.conn_reset = cb_conn_reset;
+    cbs.video_reset = cb_video_reset;
+    cbs.video_set_codec_and_size = cb_video_set_codec_and_size;
+    cbs.video_process = cb_video_process;
+    cbs.video_pause = cb_video_pause;
+    cbs.video_resume = cb_video_resume;
+    cbs.video_flush = cb_video_flush;
+    cbs.audio_process = cb_audio_process;
+    cbs.audio_flush = cb_audio_flush;
+    cbs.audio_set_client_volume = cb_audio_set_client_volume;
+    cbs.audio_set_volume = cb_audio_set_volume;
+    cbs.audio_get_format = cb_audio_get_format;
+    cbs.report_client_request = cb_report_client_request;
+    cbs.register_client = cb_register_client;
+    cbs.check_register = cb_check_register;
+    cbs.passwd = cb_passwd;
+    cbs.display_pin = cb_display_pin;
+
+    g_raop = raop_init(&cbs);
+    if (!g_raop) {
+        emit(AP_EV_ERROR, "raop_init failed");
+        airplay_stop();
+        return -4;
+    }
+    raop_set_log_callback(g_raop, bridge_log_callback, nullptr);
+    raop_set_log_level(g_raop, LOGGER_INFO);
+
+    if (raop_init2(g_raop, /* nohold */ 0, mac.c_str(), keyfile.c_str())) {
+        emit(AP_EV_ERROR, "raop_init2 failed");
+        airplay_stop();
+        return -5;
+    }
+
+    unsigned short tcp[3] = {0, 0, 0};   /* 0 = dynamically assigned */
+    unsigned short udp[3] = {0, 0, 0};
+    raop_set_tcp_ports(g_raop, tcp);
+    raop_set_udp_ports(g_raop, udp);
+
+    unsigned short raop_port = raop_get_port(g_raop);
+    raop_start_httpd(g_raop, &raop_port);
+    raop_set_port(g_raop, raop_port);
+    raop_set_dnssd(g_raop, g_dnssd);
+
+    if (dnssd_register_raop(g_dnssd, raop_port) ||
+        dnssd_register_airplay(g_dnssd, raop_port)) {
+        emit(AP_EV_ERROR, "Bonjour service registration failed "
+                          "(check Local Network permission)");
+        airplay_stop();
+        return -6;
+    }
+
+    g_loop_thread = std::thread(loop_thread_fn);
+    emit(AP_EV_WAITING);
+    return 0;
+}
+
+extern "C" void airplay_stop(void) {
+    if (!g_running.exchange(false))
+        return;
+
+    if (g_loop) g_main_loop_quit(g_loop);
+    if (g_loop_thread.joinable()) g_loop_thread.join();
+
+    if (g_dnssd) {
+        dnssd_unregister_raop(g_dnssd);
+        dnssd_unregister_airplay(g_dnssd);
+        dnssd_destroy(g_dnssd);
+        g_dnssd = nullptr;
+    }
+    if (g_raop) {
+        raop_destroy(g_raop);
+        g_raop = nullptr;
+    }
+
+    audio_renderer_stop();
+    audio_renderer_destroy();
+    video_renderer_stop();
+    video_renderer_destroy();
+
+    if (g_logger) {
+        logger_destroy(g_logger);
+        g_logger = nullptr;
+    }
+    g_open_connections = 0;
+    g_clock_offset = 0;
+    emit(AP_EV_STOPPED);
+}
+
+extern "C" void airplay_set_video_view(void *view) {
+    g_video_view = view;
+    video_renderer_set_window_handle((uintptr_t) view);
+}
+
+extern "C" void airplay_set_volume(double volume) {
+    if (volume < 0.0) volume = 0.0;
+    if (volume > 1.0) volume = 1.0;
+    g_volume = volume;
+    audio_renderer_set_volume(volume);
+}
+
+/* ------------------------------------------------------------- NSView */
+
+extern "C" void *airplay_create_video_view(void) {
+    __block NSView *view = nil;
+    void (^make)(void) = ^{
+        view = [[NSView alloc] initWithFrame:NSZeroRect];
+        view.wantsLayer = YES;
+        view.layer.backgroundColor = NSColor.blackColor.CGColor;
+    };
+    if ([NSThread isMainThread])
+        make();
+    else
+        dispatch_sync(dispatch_get_main_queue(), make);
+    return (void *) CFBridgingRetain(view);
+}
+
+extern "C" void airplay_release_video_view(void *ptr) {
+    if (!ptr) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSView *view = (NSView *) CFBridgingRelease(ptr);
+        [view removeFromSuperview];
+        /* ARC releases view at end of scope */
+    });
+}

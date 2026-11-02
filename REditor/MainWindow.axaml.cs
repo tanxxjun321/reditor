@@ -7,6 +7,8 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Styling;
+using Avalonia.Threading;
+using REditor.AirPlay;
 
 namespace REditor;
 
@@ -36,6 +38,69 @@ public partial class MainWindow : Window {
     protected override void OnOpened(EventArgs e) {
         base.OnOpened(e);
         UpdateThemeButton();
+        VideoHost.Service.ServerEvent += OnAirPlayEvent;
+    }
+
+    protected override void OnClosing(WindowClosingEventArgs e) {
+        VideoHost.Service.ServerEvent -= OnAirPlayEvent;
+        VideoHost.Service.Dispose();
+        base.OnClosing(e);
+    }
+
+    // ---------- 页面导航 ----------
+
+    private void OnNavSelectionChanged(object? sender, SelectionChangedEventArgs e) {
+        bool mirror = NavList.SelectedIndex == 3;
+        MirrorPage.IsVisible = mirror;
+        EditorPage.IsVisible = !mirror;
+    }
+
+    // ---------- iPhone 投屏 ----------
+
+    private void OnMirrorToggleClicked(object? sender, RoutedEventArgs e) {
+        var service = VideoHost.Service;
+        if (service.IsRunning) {
+            service.Stop();
+            return;
+        }
+        try {
+            service.Start("REditor");
+        } catch (Exception ex) {
+            MirrorStatusText.Text = $"启动失败:{ex.Message}";
+        }
+    }
+
+    private void OnAirPlayEvent(object? sender, AirPlayService.EventArgs e) {
+        // 原生回调可能来自任意线程
+        Dispatcher.UIThread.Post(() => ApplyAirPlayEvent(e));
+    }
+
+    private void ApplyAirPlayEvent(AirPlayService.EventArgs e) {
+        switch (e.Type) {
+            case AirPlayService.EventType.Waiting:
+                MirrorStatusText.Text = "等待 iPhone 连接…";
+                MirrorToggleButton.Content = "停止接收";
+                MirrorResolutionText.Text = string.Empty;
+                break;
+            case AirPlayService.EventType.Connected:
+                MirrorStatusText.Text = $"已连接:{e.Info}";
+                break;
+            case AirPlayService.EventType.Disconnected:
+                MirrorStatusText.Text = "等待 iPhone 连接…";
+                MirrorResolutionText.Text = string.Empty;
+                break;
+            case AirPlayService.EventType.VideoSize:
+                MirrorResolutionText.Text = $"{e.Width} × {e.Height}";
+                break;
+            case AirPlayService.EventType.Error:
+                MirrorStatusText.Text = $"错误:{e.Info}";
+                break;
+            case AirPlayService.EventType.Stopped:
+                MirrorStatusText.Text = "未启动";
+                MirrorToggleButton.Content = "开始接收";
+                MirrorResolutionText.Text = string.Empty;
+                break;
+        }
     }
 
     private void OnGreetClicked(object? sender, RoutedEventArgs e) {

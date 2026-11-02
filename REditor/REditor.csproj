@@ -18,4 +18,12 @@
       <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
     </PackageReference>
   </ItemGroup>
+
+  <!-- AirPlay 原生桥(macOS):先执行 native/build.sh 或 cmake 构建生成 -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <None Include="../native/build/libairplaybridge.dylib"
+          Condition="Exists('../native/build/libairplaybridge.dylib')"
+          Link="libairplaybridge.dylib"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

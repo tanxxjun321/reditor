@@ -10,3 +10,6 @@ obj/
 .vs/
 *.user
 *.suo
+
+# AirPlay native bridge
+native/build/
