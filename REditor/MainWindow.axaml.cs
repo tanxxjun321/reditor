@@ -75,8 +75,22 @@ public partial class MainWindow : Window {
     }
 
     private void OnAirPlayEvent(object? sender, AirPlayService.EventArgs e) {
-        // 原生回调可能来自任意线程
+        // 原生回调可能来自任意线程;先落盘诊断日志,再回 UI 线程
+        LogAirPlayEvent(e);
         Dispatcher.UIThread.Post(() => ApplyAirPlayEvent(e));
+    }
+
+    private static readonly string AirPlayLogPath =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "reditor_airplay.log");
+    private static readonly object AirPlayLogLock = new();
+
+    private static void LogAirPlayEvent(AirPlayService.EventArgs e) {
+        try {
+            lock (AirPlayLogLock) {
+                System.IO.File.AppendAllText(AirPlayLogPath,
+                    $"{DateTime.Now:HH:mm:ss.fff} [{e.Type}] {e.Info ?? ""} {e.Width}x{e.Height}\n");
+            }
+        } catch { /* 日志失败不影响功能 */ }
     }
 
     /// <summary>让视频宿主区保持与手机画面相同的宽高比(多余区域留黑)。</summary>

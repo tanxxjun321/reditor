@@ -119,6 +119,43 @@ static std::vector<char> parse_hw_addr(const std::string &str) {
     return hw;
 }
 
+/* ---------------------------------------------------- clock offset sanity */
+
+#define AP_SANITY_ADOPT_NS  3000000000LL   /* |local - remote| <= 3s to adopt offset */
+#define AP_SANITY_SKEW_NS   5000000000LL   /* |pts - local|   >  5s => resync       */
+
+/* The sender->local clock offset is computed from the first packet after a
+ * reset. Around pause/resume (iPhone lock/unlock) the client can deliver
+ * stale or garbage timestamps; adopting an offset from one poisons every
+ * later timestamp (observed: audio scheduled ~5 hours into the future).
+ * Only adopt offsets that map the first packet to (roughly) now. */
+static bool clock_offset_ensure(uint64_t remote, uint64_t local) {
+    if (g_clock_offset) return true;
+    int64_t diff = (int64_t) local - (int64_t) remote;
+    if (diff > -AP_SANITY_ADOPT_NS && diff < AP_SANITY_ADOPT_NS) {
+        g_clock_offset = (uint64_t) diff;
+        return true;
+    }
+    emit(AP_EV_LOG, "dropping packet with bogus timestamp while syncing clock");
+    return false;
+}
+
+/* Returns the local-domain PTS for a packet, or false to drop it. */
+static bool map_pts(uint64_t *remote, uint64_t local) {
+    if (!clock_offset_ensure(*remote, local)) return false;
+    uint64_t pts = *remote + g_clock_offset;
+    int64_t skew = (int64_t) pts - (int64_t) local;
+    if (skew > AP_SANITY_SKEW_NS || skew < -AP_SANITY_SKEW_NS) {
+        /* client re-based its clock (e.g. across lock/unlock): resync once */
+        emit(AP_EV_LOG, "clock skew detected, resyncing sender clock offset");
+        g_clock_offset = 0;
+        if (!clock_offset_ensure(*remote, local)) return false;
+        pts = *remote + g_clock_offset;
+    }
+    *remote = pts;
+    return true;
+}
+
 /* ------------------------------------------------------- renderer control */
 
 static void start_video_renderer() {
@@ -167,6 +204,11 @@ extern "C" {
 static void cb_conn_init(void *cls) {
     (void) cls;
     g_open_connections++;
+    /* start each session at full volume: the client drives it down to its
+     * own preference right after connecting. Without this, the -30 dB
+     * fade-out an iPhone sends on disconnect would persist silently. */
+    g_volume = 1.0;
+    audio_renderer_set_volume(g_volume);
 }
 
 static void cb_conn_destroy(void *cls) {
@@ -219,17 +261,17 @@ static int cb_video_set_codec_and_size(void *cls, video_codec_t codec,
 static void cb_video_process(void *cls, raop_ntp_t *ntp, video_decode_struct *data) {
     (void) cls; (void) ntp;
     if (!g_running) return;
-    if (!g_clock_offset) {
-        uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
-        g_clock_offset = local - data->ntp_time_remote;
-    }
+    uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
+    if (!map_pts(&data->ntp_time_remote, local)) return;
     int count = 0;
     uint64_t pts_mismatch = 0;
     do {
-        data->ntp_time_remote += g_clock_offset;
         pts_mismatch = video_renderer_render_buffer(data->data, &data->data_len,
                                                     &data->nal_count, &data->ntp_time_remote);
-        if (pts_mismatch) g_clock_offset += pts_mismatch;
+        if (pts_mismatch) {
+            g_clock_offset += pts_mismatch;
+            data->ntp_time_remote += pts_mismatch;
+        }
         count++;
     } while (pts_mismatch && count < 10);
 }
@@ -241,11 +283,8 @@ static void cb_video_flush(void *cls)  { (void) cls; video_renderer_flush();  }
 static void cb_audio_process(void *cls, raop_ntp_t *ntp, audio_decode_struct *data) {
     (void) cls; (void) ntp;
     if (!g_running) return;
-    if (!g_clock_offset) {
-        uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
-        g_clock_offset = local - data->ntp_time_remote;
-    }
-    data->ntp_time_remote += g_clock_offset;
+    uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
+    if (!map_pts(&data->ntp_time_remote, local)) return;
     audio_renderer_render_buffer(data->data, &data->data_len, &data->seqnum,
                                  &data->ntp_time_remote);
 }
@@ -254,19 +293,23 @@ static void cb_audio_flush(void *cls) { (void) cls; audio_renderer_flush(); }
 
 static double cb_audio_set_client_volume(void *cls) {
     (void) cls;
-    /* AirPlay dB in [-30, 0]; map our linear volume back to that range */
-    return g_volume <= 0.0 ? -30.0 : 30.0 * (g_volume - 1.0);
+    /* report current volume back to the client in AirPlay dB */
+    return g_volume <= 0.0 ? -144.0 : 20.0 * log10(g_volume);
 }
 
 static void cb_audio_set_volume(void *cls, float volume) {
     (void) cls;
-    double frac;
-    if (volume <= -144.0f)      frac = 0.0;              /* AirPlay "mute" */
-    else if (volume <= -30.0f)  frac = 0.0;
-    else if (volume >= 0.0f)    frac = 1.0;
-    else                        frac = (30.0f + volume) / 30.0f;
-    /* dB-linear mapping, -30 dB floor (matches uxplay's default curve) */
-    g_volume = frac <= 0.0 ? 0.0 : pow(10.0, 0.05 * (-30.0 + 30.0 * frac));
+    /* AirPlay volume in dB, range [-144 (mute), 0 (max)]. Map dB -> linear
+     * directly: -30 dB is quiet (0.0316), NOT silence. (iPhone pushes -30 dB
+     * as a fade-out when it stops mirroring; treating that as mute left the
+     * pipeline silent forever after a disconnect/reconnect.) */
+    if (volume <= -144.0f) {
+        g_volume = 0.0;
+    } else {
+        if (volume < -30.0f) volume = -30.0f;
+        if (volume > 0.0f)   volume = 0.0f;
+        g_volume = pow(10.0, (double) volume / 20.0);
+    }
     audio_renderer_set_volume(g_volume);
 }
 
@@ -274,6 +317,10 @@ static void cb_audio_get_format(void *cls, unsigned char *ct, unsigned short *sp
                                 bool *usingScreen, bool *isMedia, uint64_t *audioFormat) {
     (void) cls; (void) spf; (void) usingScreen; (void) isMedia; (void) audioFormat;
     audio_renderer_start(ct);
+    /* re-assert volume on the (re)started pipeline: audio_renderer_set_volume
+     * is a no-op while no renderer is active, and a previous session's
+     * fade-out leaves the volume element at ~0 */
+    audio_renderer_set_volume(g_volume);
 }
 
 static void cb_report_client_request(void *cls, char *deviceid, char *model,
