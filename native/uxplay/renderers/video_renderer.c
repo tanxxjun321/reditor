@@ -47,6 +47,37 @@ void video_renderer_set_window_handle(uintptr_t handle) {
     external_window_handle = handle;
 }
 
+/* --- REditor addition: report negotiated video size to the host app ------ */
+#include <stdio.h>
+static video_caps_callback_t video_caps_cb = NULL;
+static void *video_caps_cb_ctx = NULL;
+
+void video_renderer_set_caps_callback(video_caps_callback_t cb, void *ctx) {
+    video_caps_cb = cb;
+    video_caps_cb_ctx = ctx;
+}
+
+static GstPadProbeReturn
+sink_caps_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+    GstEvent *event = GST_PAD_PROBE_INFO_EVENT(info);
+    if (GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+        GstCaps *caps = NULL;
+        gst_event_parse_caps(event, &caps);
+        if (caps && gst_caps_is_fixed(caps)) {
+            const GstStructure *s = gst_caps_get_structure(caps, 0);
+            int w = 0, h = 0;
+            gst_structure_get_int(s, "width", &w);
+            gst_structure_get_int(s, "height", &h);
+            if (w > 0 && h > 0 && video_caps_cb) {
+                video_caps_cb(w, h, video_caps_cb_ctx);
+            }
+        }
+    }
+    return GST_PAD_PROBE_OK;
+}
+/* --- end REditor addition ------------------------------------------------- */
+
+
 #define SECOND_IN_NSECS 1000000000ULL
 #ifdef X_DISPLAY_FIX
 #include <gst/video/navigation.h>
@@ -443,6 +474,21 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
             renderer_type[i]->appsrc = gst_bin_get_by_name (GST_BIN (renderer_type[i]->pipeline), "video_source");
             g_assert(renderer_type[i]->appsrc);
             g_object_set(renderer_type[i]->appsrc, "caps", caps, "stream-type", 0, "is-live", TRUE, "format", GST_FORMAT_TIME, NULL);
+            /* REditor addition: watch the sink's negotiated caps for size changes */
+            {
+                char sink_name[96];
+                snprintf(sink_name, sizeof(sink_name), "%s_%s", videosink, renderer_type[i]->codec);
+                GstElement *sink_el = gst_bin_get_by_name(GST_BIN(renderer_type[i]->pipeline), sink_name);
+                if (sink_el) {
+                    GstPad *sink_pad = gst_element_get_static_pad(sink_el, "sink");
+                    if (sink_pad) {
+                        gst_pad_add_probe(sink_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+                                          sink_caps_probe, NULL, NULL);
+                        gst_object_unref(sink_pad);
+                    }
+                    gst_object_unref(sink_el);
+                }
+            }
             g_string_free(launch, TRUE);
             gst_caps_unref(caps);
             gst_object_unref(clock);

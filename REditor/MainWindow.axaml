@@ -195,9 +195,14 @@
                     </Grid>
                 </Border>
 
-                <!-- 视频区 -->
-                <Border Grid.Row="1" Classes="card" Margin="24" Padding="0" ClipToBounds="True">
-                    <airplay:AirPlayVideoHost x:Name="VideoHost"/>
+                <!-- 视频区:按手机画面比例居中显示,多余区域留黑 -->
+                <Border Grid.Row="1" Classes="card" Margin="24" Padding="0" ClipToBounds="True"
+                        Background="Black">
+                    <Grid x:Name="VideoArea">
+                        <airplay:AirPlayVideoHost x:Name="VideoHost"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"/>
+                    </Grid>
                 </Border>
             </Grid>
         </Grid>

@@ -300,6 +300,12 @@ static void cb_display_pin(void *cls, char *pin) {
     emit(AP_EV_LOG, pin);
 }
 
+/* negotiated frame size from the pipeline (also fires on rotation) */
+static void on_video_caps(int width, int height, void *ctx) {
+    (void) ctx;
+    emit(AP_EV_VIDEO_SIZE, nullptr, width, height);
+}
+
 /* ---------------------------------------------------- GLib loop thread */
 
 static void loop_thread_fn() {
@@ -351,6 +357,7 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
     logger_set_callback(g_logger, bridge_log_callback, nullptr);
 
     audio_renderer_init(g_logger, "osxaudiosink", &g_audio_sync, &g_video_sync, "");
+    video_renderer_set_caps_callback(on_video_caps, nullptr);
     start_video_renderer();
 
     /* persistent device identity + pairing key */

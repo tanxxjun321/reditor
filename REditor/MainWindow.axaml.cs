@@ -39,6 +39,7 @@ public partial class MainWindow : Window {
         base.OnOpened(e);
         UpdateThemeButton();
         VideoHost.Service.ServerEvent += OnAirPlayEvent;
+        VideoArea.SizeChanged += (_, _) => UpdateVideoHostSize();
     }
 
     protected override void OnClosing(WindowClosingEventArgs e) {
@@ -56,6 +57,9 @@ public partial class MainWindow : Window {
     }
 
     // ---------- iPhone 投屏 ----------
+
+    // 视频画面宽高比(w/h),0 表示未知(未连接时视频区填满)
+    private double _videoAspect;
 
     private void OnMirrorToggleClicked(object? sender, RoutedEventArgs e) {
         var service = VideoHost.Service;
@@ -75,6 +79,25 @@ public partial class MainWindow : Window {
         Dispatcher.UIThread.Post(() => ApplyAirPlayEvent(e));
     }
 
+    /// <summary>让视频宿主区保持与手机画面相同的宽高比(多余区域留黑)。</summary>
+    private void UpdateVideoHostSize() {
+        if (_videoAspect <= 0) {
+            VideoHost.Width = double.NaN;
+            VideoHost.Height = double.NaN;
+            return;
+        }
+        double availW = VideoArea.Bounds.Width;
+        double availH = VideoArea.Bounds.Height;
+        if (availW <= 0 || availH <= 0) return;
+        if (availW / availH > _videoAspect) {
+            VideoHost.Height = availH;
+            VideoHost.Width = availH * _videoAspect;
+        } else {
+            VideoHost.Width = availW;
+            VideoHost.Height = availW / _videoAspect;
+        }
+    }
+
     private void ApplyAirPlayEvent(AirPlayService.EventArgs e) {
         switch (e.Type) {
             case AirPlayService.EventType.Waiting:
@@ -91,6 +114,10 @@ public partial class MainWindow : Window {
                 break;
             case AirPlayService.EventType.VideoSize:
                 MirrorResolutionText.Text = $"{e.Width} × {e.Height}";
+                if (e.Width > 0 && e.Height > 0) {
+                    _videoAspect = (double)e.Width / e.Height;
+                    UpdateVideoHostSize();
+                }
                 break;
             case AirPlayService.EventType.Error:
                 MirrorStatusText.Text = $"错误:{e.Info}";
@@ -99,6 +126,8 @@ public partial class MainWindow : Window {
                 MirrorStatusText.Text = "未启动";
                 MirrorToggleButton.Content = "开始接收";
                 MirrorResolutionText.Text = string.Empty;
+                _videoAspect = 0;
+                UpdateVideoHostSize();
                 break;
         }
     }
