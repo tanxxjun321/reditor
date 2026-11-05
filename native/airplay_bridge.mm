@@ -118,9 +118,14 @@ static std::vector<char> parse_hw_addr(const std::string &str) {
 
 static void start_video_renderer() {
     videoflip_t flips[2] = { NONE, NONE };
+    /* Decoder: force software (avdec_h264) instead of decodebin/vtdec.
+     * VideoToolbox corrupts the heap when the stream changes resolution
+     * mid-flight (iPhone rotation delivers a new SPS in-band); avdec
+     * handles it cleanly. See test: alternate portrait/landscape Annex-B
+     * into "h264parse ! vtdec" -> crash; "h264parse ! avdec_h264" -> fine. */
     video_renderer_init(g_logger, g_server_name.c_str(), flips,
                         "h264parse", /* rtp_pipeline */ "",
-                        /* decoder */ "decodebin", /* converter */ "videoconvert",
+                        /* decoder */ "avdec_h264", /* converter */ "videoconvert",
                         "osxvideosink", /* sink options */ "",
                         /* fullscreen */ false, g_video_sync,
                         /* h265 */ false, /* coverart */ false,
