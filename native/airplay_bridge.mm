@@ -55,7 +55,12 @@ static uint64_t           g_clock_offset = 0;    /* remote->local NTP offset   *
 static double             g_volume = 1.0;        /* GStreamer linear volume    */
 
 static bool               g_audio_sync = true;
-static bool               g_video_sync = false;  /* "-vsync no": recommended on macOS */
+/* Video must run clock-synced (sync=true): buffers then carry the sender's
+ * NTP-derived PTS and the sink presents on the same REALTIME clock as the
+ * audio sink, so A/V stay aligned and late frames get dropped via QoS.
+ * With sync=false the video queue accumulates whenever decode momentarily
+ * lags and latency grows unboundedly (no timestamps, no frame dropping). */
+static bool               g_video_sync = true;
 
 static void              *g_video_view = nullptr; /* NSView* from Avalonia     */
 static std::string        g_server_name;
