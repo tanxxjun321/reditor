@@ -63,6 +63,9 @@ public sealed class AirPlayService : IDisposable {
 
     internal void ReleaseVideoView(IntPtr view) => NativeBridge.airplay_release_video_view(view);
 
+    /// <summary>App-side gain multiplier (1.0 = follow the phone's volume).</summary>
+    public void SetGain(double gain) => NativeBridge.airplay_set_volume(gain);
+
     private void OnNativeEvent(IntPtr ctx, NativeBridge.NativeEvent ev, IntPtr info, int width, int height) {
         string? text = info == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(info);
         var type = (EventType)ev;
@@ -98,5 +101,8 @@ public sealed class AirPlayService : IDisposable {
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void airplay_set_video_view(IntPtr view);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void airplay_set_volume(double gain);
     }
 }

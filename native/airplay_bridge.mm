@@ -12,6 +12,7 @@
  */
 
 #import <Cocoa/Cocoa.h>
+#include <CoreAudio/CoreAudio.h>
 
 #include <atomic>
 #include <cmath>
@@ -52,7 +53,14 @@ static guint              g_audio_watch1 = 0;
 
 static std::atomic<int>   g_open_connections{0};
 static uint64_t           g_clock_offset = 0;    /* remote->local NTP offset   */
-static double             g_volume = 1.0;        /* GStreamer linear volume    */
+static double             g_volume = 1.0;        /* client-driven linear volume */
+static double             g_user_gain = 1.0;     /* app-side gain multiplier    */
+
+static void apply_volume() {
+    double v = g_volume * g_user_gain;
+    if (v < 0.0) v = 0.0;
+    audio_renderer_set_volume(v);   /* renderer clamps to <= 10.0 */
+}
 
 static bool               g_audio_sync = true;
 /* Video must run clock-synced (sync=true): buffers then carry the sender's
@@ -64,6 +72,9 @@ static bool               g_video_sync = true;
 
 static void              *g_video_view = nullptr; /* NSView* from Avalonia     */
 static std::string        g_server_name;
+
+static unsigned char      g_audio_ct = 0;         /* active stream's codec      */
+static std::atomic<bool>  g_audio_active{false};
 
 /* ------------------------------------------------------------- utilities */
 
@@ -156,6 +167,30 @@ static bool map_pts(uint64_t *remote, uint64_t local) {
     return true;
 }
 
+/* ------------------------------------------------ default output tracking */
+
+/* osxaudiosink binds the output device when the pipeline opens and does NOT
+ * follow macOS default-output changes (e.g. plugging in headphones) while
+ * playing. Listen for the change ourselves and restart the audio renderer,
+ * which reopens the sink on the current default device. */
+static OSStatus default_output_changed_cb(AudioObjectID, UInt32,
+                                          const AudioObjectPropertyAddress *, void *) {
+    if (g_running && g_audio_active && g_audio_ct) {
+        unsigned char ct = g_audio_ct;
+        emit(AP_EV_LOG, "default audio output changed; restarting audio renderer");
+        audio_renderer_stop();
+        audio_renderer_start(&ct);
+        apply_volume();
+    }
+    return noErr;
+}
+
+static const AudioObjectPropertyAddress kDefaultOutputAddr = {
+    kAudioHardwarePropertyDefaultOutputDevice,
+    kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyElementMain
+};
+
 /* ------------------------------------------------------- renderer control */
 
 static void start_video_renderer() {
@@ -208,7 +243,7 @@ static void cb_conn_init(void *cls) {
      * own preference right after connecting. Without this, the -30 dB
      * fade-out an iPhone sends on disconnect would persist silently. */
     g_volume = 1.0;
-    audio_renderer_set_volume(g_volume);
+    apply_volume();
 }
 
 static void cb_conn_destroy(void *cls) {
@@ -217,6 +252,7 @@ static void cb_conn_destroy(void *cls) {
     if (g_open_connections == 0) {
         g_clock_offset = 0;
         audio_renderer_stop();
+        g_audio_active = false;
         emit(AP_EV_DISCONNECTED);
     }
 }
@@ -310,17 +346,19 @@ static void cb_audio_set_volume(void *cls, float volume) {
         if (volume > 0.0f)   volume = 0.0f;
         g_volume = pow(10.0, (double) volume / 20.0);
     }
-    audio_renderer_set_volume(g_volume);
+    apply_volume();
 }
 
 static void cb_audio_get_format(void *cls, unsigned char *ct, unsigned short *spf,
                                 bool *usingScreen, bool *isMedia, uint64_t *audioFormat) {
     (void) cls; (void) spf; (void) usingScreen; (void) isMedia; (void) audioFormat;
+    g_audio_ct = *ct;
     audio_renderer_start(ct);
+    g_audio_active = true;
     /* re-assert volume on the (re)started pipeline: audio_renderer_set_volume
      * is a no-op while no renderer is active, and a previous session's
      * fade-out leaves the volume element at ~0 */
-    audio_renderer_set_volume(g_volume);
+    apply_volume();
 }
 
 static void cb_report_client_request(void *cls, char *deviceid, char *model,
@@ -411,6 +449,9 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
     audio_renderer_init(g_logger, "osxaudiosink", &g_audio_sync, &g_video_sync, "");
     video_renderer_set_caps_callback(on_video_caps, nullptr);
     start_video_renderer();
+
+    AudioObjectAddPropertyListener(kAudioObjectSystemObject, &kDefaultOutputAddr,
+                                   default_output_changed_cb, nullptr);
 
     /* persistent device identity + pairing key */
     std::string mac = load_or_create_mac();
@@ -524,6 +565,10 @@ extern "C" void airplay_stop(void) {
     audio_renderer_destroy();
     video_renderer_stop();
     video_renderer_destroy();
+    g_audio_active = false;
+
+    AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &kDefaultOutputAddr,
+                                      default_output_changed_cb, nullptr);
 
     if (g_logger) {
         logger_destroy(g_logger);
@@ -539,11 +584,12 @@ extern "C" void airplay_set_video_view(void *view) {
     video_renderer_set_window_handle((uintptr_t) view);
 }
 
-extern "C" void airplay_set_volume(double volume) {
-    if (volume < 0.0) volume = 0.0;
-    if (volume > 1.0) volume = 1.0;
-    g_volume = volume;
-    audio_renderer_set_volume(volume);
+/* App-side gain multiplier (0 .. 3), applied on top of the client volume. */
+extern "C" void airplay_set_volume(double gain) {
+    if (gain < 0.0) gain = 0.0;
+    if (gain > 3.0) gain = 3.0;
+    g_user_gain = gain;
+    apply_volume();
 }
 
 /* ------------------------------------------------------------- NSView */

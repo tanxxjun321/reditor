@@ -49,7 +49,7 @@ void  airplay_release_video_view(void *view);
  */
 void  airplay_set_video_view(void *view);
 
-/* Volume 0.0 (mute) .. 1.0 (max). */
+/* App-side gain multiplier, 0.0 .. 3.0 (1.0 = keep the client's volume). */
 void  airplay_set_volume(double volume);
 
 #ifdef __cplusplus

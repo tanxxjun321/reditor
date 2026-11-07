@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -60,6 +61,11 @@ public partial class MainWindow : Window {
 
     // 视频画面宽高比(w/h),0 表示未知(未连接时视频区填满)
     private double _videoAspect;
+
+    private void OnGainChanged(object? sender, RangeBaseValueChangedEventArgs e) {
+        GainText.Text = $"{(int)(e.NewValue * 100)}%";
+        VideoHost.Service.SetGain(e.NewValue);
+    }
 
     private void OnMirrorToggleClicked(object? sender, RoutedEventArgs e) {
         var service = VideoHost.Service;

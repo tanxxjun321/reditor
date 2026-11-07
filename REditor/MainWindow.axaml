@@ -178,7 +178,7 @@
 
                 <!-- 控制栏 -->
                 <Border Classes="card" Margin="24,24,24,0" Padding="14,12">
-                    <Grid ColumnDefinitions="Auto,*,Auto">
+                    <Grid ColumnDefinitions="Auto,*,Auto,Auto">
                         <Button x:Name="MirrorToggleButton" Classes="primary" Content="开始接收"
                                 Click="OnMirrorToggleClicked" VerticalAlignment="Center"/>
                         <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center" Spacing="2">
@@ -187,9 +187,22 @@
                                        Text="未启动"/>
                             <TextBlock Classes="caption" FontSize="12"
                                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                                       Text="启动后,iPhone 控制中心 → 屏幕镜像 → 选择「REditor」"/>
+                                       Text="启动后,iPhone 控制中心 → 屏幕镜像 → 选择「REditor」;音量可用手机音量键调节"/>
                         </StackPanel>
-                        <TextBlock Grid.Column="2" x:Name="MirrorResolutionText" Classes="caption"
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8"
+                                    VerticalAlignment="Center" Margin="0,0,16,0">
+                            <TextBlock Classes="caption" FontSize="12" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                                       Text="增益"/>
+                            <Slider x:Name="GainSlider" Minimum="0" Maximum="2" Value="1" Width="110"
+                                    VerticalAlignment="Center"
+                                    ValueChanged="OnGainChanged"/>
+                            <TextBlock x:Name="GainText" Classes="caption" FontSize="12" Width="38"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                                       Text="100%"/>
+                        </StackPanel>
+                        <TextBlock Grid.Column="3" x:Name="MirrorResolutionText" Classes="caption"
                                    FontSize="12" VerticalAlignment="Center"
                                    Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
                     </Grid>
