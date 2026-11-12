@@ -82,8 +82,36 @@ public partial class MainWindow : Window {
         TopBar.IsHitTestVisible = false;
         Toolbar.Opacity = 0;
         Toolbar.IsHitTestVisible = false;
-        // 光标随悬浮层一起隐藏,鼠标一动自动恢复(macOS 原生行为)
-        if (_isMacOS) VideoHost.Service.HideCursorUntilMouseMoves();
+        // 光标随悬浮层一起隐藏,鼠标一动自动恢复(macOS 原生行为);仅全屏时才隐藏光标
+        if (_isMacOS && WindowState == WindowState.FullScreen)
+            VideoHost.Service.HideCursorUntilMouseMoves();
+    }
+
+    /// <summary>悬浮层在连接中即自动隐藏(全屏/窗口模式一致);光标隐藏是全屏专属,见 HideChrome。</summary>
+    private bool ShouldAutoHideChrome => _mirroring;
+
+    private void RefreshChromeVisibility() {
+        _chromeTimer.Stop();
+        ShowChrome();
+        if (ShouldAutoHideChrome) _chromeTimer.Start();
+    }
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change) {
+        base.OnPropertyChanged(change);
+        if (change.Property != WindowStateProperty) return;
+        var oldState = change.GetOldValue<WindowState>();
+        var newState = change.GetNewValue<WindowState>();
+
+        // 退出全屏后 macOS 会把系统标题栏还给窗口;重新应用扩展标题栏设置
+        if (_isMacOS && oldState == WindowState.FullScreen && newState != WindowState.FullScreen) {
+            ExtendClientAreaToDecorationsHint = false;
+            Dispatcher.UIThread.Post(() => {
+                ExtendClientAreaToDecorationsHint = true;
+                ExtendClientAreaTitleBarHeightHint = 28;
+            }, DispatcherPriority.Loaded);
+        }
+
+        RefreshChromeVisibility();
     }
 
     protected override void OnPointerMoved(PointerEventArgs e) {
@@ -91,7 +119,7 @@ public partial class MainWindow : Window {
         if (!_mirroring) return;
         ShowChrome();
         _chromeTimer.Stop();
-        _chromeTimer.Start();
+        if (ShouldAutoHideChrome) _chromeTimer.Start();
     }
 
     // ---------- iPhone 投屏 ----------
@@ -226,7 +254,7 @@ public partial class MainWindow : Window {
                 _mirroring = true;
                 SetStatus($"已连接:{e.Info}");
                 UpdateEmptyState(false, "");
-                _chromeTimer.Start();
+                RefreshChromeVisibility();
                 break;
             case AirPlayService.EventType.Disconnected:
                 _mirroring = false;
