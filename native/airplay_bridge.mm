@@ -594,10 +594,23 @@ extern "C" void airplay_set_volume(double gain) {
 
 /* ------------------------------------------------------------- NSView */
 
+/*
+ * Video host view that ignores all mouse input: hitTest: returns nil so
+ * every event falls through to Avalonia's view underneath. Required for
+ * the overlay UI (auto-hiding toolbar, double-click fullscreen) to work
+ * over the video area. The sink renders into this view's layer, which is
+ * unaffected by hit-testing.
+ */
+@interface APPassthroughVideoView : NSView
+@end
+@implementation APPassthroughVideoView
+- (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
+@end
+
 extern "C" void *airplay_create_video_view(void) {
     __block NSView *view = nil;
     void (^make)(void) = ^{
-        view = [[NSView alloc] initWithFrame:NSZeroRect];
+        view = [[APPassthroughVideoView alloc] initWithFrame:NSZeroRect];
         view.wantsLayer = YES;
         view.layer.backgroundColor = NSColor.blackColor.CGColor;
     };

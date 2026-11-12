@@ -1,12 +1,10 @@
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
-using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using REditor.AirPlay;
@@ -21,41 +19,41 @@ public partial class MainWindow : Window {
         InitializeComponent();
 
         _settings = Settings.Load();
-        FooterText.Text = $"Ready · {RuntimeInformation.OSDescription}";
 
         // 恢复持久化的设置
         GainSlider.Value = _settings.Gain;
         GainText.Text = $"{(int)(_settings.Gain * 100)}%";
         DeviceNameBox.Text = _settings.DeviceName;
         GuideDeviceNameText.Text = $"3. 选择「{_settings.DeviceName}」";
+        ThemeCombo.SelectedIndex = _settings.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
+        ApplySavedTheme();
         Topmost = _settings.Topmost;
         UpdatePinButton();
-        ApplySavedTheme();
 
-        // 平台适配：仅在 macOS 启用扩展标题栏 + Vibrancy
+        // 平台适配：仅在 macOS 启用扩展标题栏(内容延伸到交通灯按钮区域)
         _isMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
         if (_isMacOS) {
-            TitleBar.IsVisible = true;
-
-            // macOS 原生方案：保留 NSWindow（自带圆角、阴影、描边、交通灯按钮），
-            // 内容扩展到标题栏，Vibrancy 用窗口级 AcrylicBlur，系统会把它裁剪到原生圆角内。
-            // （控件级 ExperimentalAcrylicBorder 在 macOS 上没有模糊实现，不可用。）
             ExtendClientAreaToDecorationsHint = true;
             ExtendClientAreaTitleBarHeightHint = 28;
-            TransparencyLevelHint = new List<WindowTransparencyLevel> { WindowTransparencyLevel.AcrylicBlur };
-            Background = new SolidColorBrush(Colors.Transparent, 0);
-        } else {
-            TitleBar.IsVisible = false;
         }
+
+        // 悬浮层自动隐藏计时器:连接中鼠标静止一段时间后淡出
+        _chromeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.5) };
+        _chromeTimer.Tick += (_, _) => {
+            _chromeTimer.Stop();
+            if (_mirroring && !_flyoutOpen) HideChrome();
+        };
     }
 
     protected override void OnOpened(EventArgs e) {
         base.OnOpened(e);
         VideoHost.Service.ServerEvent += OnAirPlayEvent;
         VideoArea.SizeChanged += (_, _) => UpdateVideoHostSize();
-        // 双击画面切换全屏(注意:NSView 区域的手势被原生视图消费,
-        // 只有黑色留边区域能触发,全屏按钮是主要入口)
         VideoArea.PointerPressed += OnVideoAreaPointerPressed;
+        if (SettingsButton.Flyout is Flyout flyout) {
+            flyout.Opened += (_, _) => _flyoutOpen = true;
+            flyout.Closed += (_, _) => _flyoutOpen = false;
+        }
     }
 
     protected override void OnClosing(WindowClosingEventArgs e) {
@@ -64,10 +62,44 @@ public partial class MainWindow : Window {
         base.OnClosing(e);
     }
 
+    // ---------- 悬浮层:自动隐藏/唤醒 ----------
+
+    private readonly DispatcherTimer _chromeTimer;
+    private bool _mirroring;   // 有设备连接时为 true,此时悬浮层才会自动隐藏
+    private bool _flyoutOpen;  // 设置面板打开时不隐藏悬浮层
+
+    private void ShowChrome() {
+        if (!_borderless) {
+            TopBar.Opacity = 1;
+            TopBar.IsHitTestVisible = true;
+        }
+        Toolbar.Opacity = 1;
+        Toolbar.IsHitTestVisible = true;
+    }
+
+    private void HideChrome() {
+        TopBar.Opacity = 0;
+        TopBar.IsHitTestVisible = false;
+        Toolbar.Opacity = 0;
+        Toolbar.IsHitTestVisible = false;
+    }
+
+    protected override void OnPointerMoved(PointerEventArgs e) {
+        base.OnPointerMoved(e);
+        if (!_mirroring) return;
+        ShowChrome();
+        _chromeTimer.Stop();
+        _chromeTimer.Start();
+    }
+
     // ---------- iPhone 投屏 ----------
 
     // 视频画面宽高比(w/h),0 表示未知(未连接时视频区填满)
     private double _videoAspect;
+
+    // 顶部状态文字的组成部分
+    private string _statusText = "REditor";
+    private string _resolutionText = "";
 
     private void OnGainChanged(object? sender, RangeBaseValueChangedEventArgs e) {
         GainText.Text = $"{(int)(e.NewValue * 100)}%";
@@ -87,30 +119,44 @@ public partial class MainWindow : Window {
         try {
             service.Start(_settings.DeviceName);
         } catch (Exception ex) {
-            MirrorStatusText.Text = $"启动失败:{ex.Message}";
+            SetStatus($"启动失败:{ex.Message}");
         }
     }
 
-    private void OnApplyDeviceName(object? sender, RoutedEventArgs e) {
+    private void OnApplySettings(object? sender, RoutedEventArgs e) {
         var name = DeviceNameBox.Text?.Trim();
-        if (string.IsNullOrEmpty(name)) return;
 
-        _settings.DeviceName = name;
-        _settings.Save();
-        GuideDeviceNameText.Text = $"3. 选择「{name}」";
-        SettingsButton.Flyout?.Hide();
+        // 外观
+        _settings.Theme = ThemeCombo.SelectedIndex switch { 1 => "Light", 2 => "Dark", _ => null };
+        ApplySavedTheme();
 
-        // 接收中改名:重启接收使新名字生效
-        var service = VideoHost.Service;
-        if (service.IsRunning) {
-            service.Stop();
-            try {
-                service.Start(name);
-            } catch (Exception ex) {
-                MirrorStatusText.Text = $"启动失败:{ex.Message}";
+        // 设备名称
+        if (!string.IsNullOrEmpty(name) && name != _settings.DeviceName) {
+            _settings.DeviceName = name;
+            GuideDeviceNameText.Text = $"3. 选择「{name}」";
+
+            // 接收中改名:重启接收使新名字生效
+            var service = VideoHost.Service;
+            if (service.IsRunning) {
+                service.Stop();
+                try {
+                    service.Start(name);
+                } catch (Exception ex) {
+                    SetStatus($"启动失败:{ex.Message}");
+                }
             }
         }
+
+        _settings.Save();
+        SettingsButton.Flyout?.Hide();
     }
+
+    private void SetStatus(string text) => StatusText.Text = _statusText = text;
+
+    private void RefreshStatus() =>
+        StatusText.Text = string.IsNullOrEmpty(_resolutionText)
+            ? _statusText
+            : $"{_statusText} · {_resolutionText}";
 
     private void OnAirPlayEvent(object? sender, AirPlayService.EventArgs e) {
         // 原生回调可能来自任意线程;先落盘诊断日志,再回 UI 线程
@@ -159,34 +205,45 @@ public partial class MainWindow : Window {
     private void ApplyAirPlayEvent(AirPlayService.EventArgs e) {
         switch (e.Type) {
             case AirPlayService.EventType.Waiting:
-                MirrorStatusText.Text = "等待 iPhone 连接…";
+                SetStatus("等待 iPhone 连接…");
                 MirrorToggleButton.Content = "停止接收";
-                MirrorResolutionText.Text = string.Empty;
+                _resolutionText = "";
+                RefreshStatus();
                 UpdateEmptyState(true, "正在等待 iPhone 连接…");
                 break;
             case AirPlayService.EventType.Connected:
-                MirrorStatusText.Text = $"已连接:{e.Info}";
+                _mirroring = true;
+                SetStatus($"已连接:{e.Info}");
                 UpdateEmptyState(false, "");
+                _chromeTimer.Start();
                 break;
             case AirPlayService.EventType.Disconnected:
-                MirrorStatusText.Text = "等待 iPhone 连接…";
-                MirrorResolutionText.Text = string.Empty;
+                _mirroring = false;
+                _chromeTimer.Stop();
+                ShowChrome();
+                SetStatus("等待 iPhone 连接…");
+                _resolutionText = "";
+                RefreshStatus();
                 UpdateEmptyState(true, "正在等待 iPhone 连接…");
                 break;
             case AirPlayService.EventType.VideoSize:
-                MirrorResolutionText.Text = $"{e.Width} × {e.Height}";
+                _resolutionText = $"{e.Width} × {e.Height}";
+                RefreshStatus();
                 if (e.Width > 0 && e.Height > 0) {
                     _videoAspect = (double)e.Width / e.Height;
                     UpdateVideoHostSize();
                 }
                 break;
             case AirPlayService.EventType.Error:
-                MirrorStatusText.Text = $"错误:{e.Info}";
+                SetStatus($"错误:{e.Info}");
                 break;
             case AirPlayService.EventType.Stopped:
-                MirrorStatusText.Text = "未启动";
+                _mirroring = false;
+                _chromeTimer.Stop();
+                ShowChrome();
+                SetStatus("REditor");
                 MirrorToggleButton.Content = "开始接收";
-                MirrorResolutionText.Text = string.Empty;
+                _resolutionText = "";
                 _videoAspect = 0;
                 UpdateVideoHostSize();
                 UpdateEmptyState(true, "尚未开始接收");
@@ -214,18 +271,17 @@ public partial class MainWindow : Window {
     }
 
     private void OnVideoAreaPointerPressed(object? sender, PointerPressedEventArgs e) {
+        // 视频视图是事件穿透的,双击画面任意位置都会到达这里
         if (e.ClickCount == 2) OnToggleFullscreen(sender, e);
     }
 
     private void OnEnterBorderless(object? sender, RoutedEventArgs e) => SetBorderless(true);
 
-    /// <summary>无边框展示模式:隐藏标题栏/控制栏/状态栏,视频区铺满窗口。</summary>
+    /// <summary>无边框展示模式:隐藏顶部栏(悬浮工具栏仍随鼠标静止自动隐藏)。</summary>
     private void SetBorderless(bool on) {
         _borderless = on;
-        TitleBar.IsVisible = !on && _isMacOS;
-        ControlBar.IsVisible = !on;
-        StatusBar.IsVisible = !on;
-        VideoCard.Margin = on ? new Thickness(0) : new Thickness(24, 16, 24, 16);
+        TopBar.IsVisible = !on;
+        if (!on) ShowChrome();
     }
 
     protected override void OnKeyDown(KeyEventArgs e) {
@@ -250,14 +306,6 @@ public partial class MainWindow : Window {
             "Light" => ThemeVariant.Light,
             _ => ThemeVariant.Default,
         };
-    }
-
-    private void OnToggleTheme(object? sender, RoutedEventArgs e) {
-        var app = Application.Current!;
-        bool toDark = ActualThemeVariant != ThemeVariant.Dark;
-        app.RequestedThemeVariant = toDark ? ThemeVariant.Dark : ThemeVariant.Light;
-        _settings.Theme = toDark ? "Dark" : "Light";
-        _settings.Save();
     }
 
     private void OnTitleBarPointerPressed(object? sender, PointerPressedEventArgs e) {

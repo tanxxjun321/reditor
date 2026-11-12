@@ -5,150 +5,125 @@
         xmlns:airplay="using:REditor.AirPlay"
         mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="600"
         x:Class="REditor.MainWindow"
-        Width="960" Height="600" MinWidth="600" MinHeight="440"
+        Width="960" Height="600" MinWidth="480" MinHeight="360"
+        Background="Black"
         Title="REditor">
 
-    <Grid RowDefinitions="Auto,*,Auto">
+    <!-- 窗口即画面:视频铺满,所有控制项悬浮在画面上 -->
+    <Grid>
 
-        <!-- ========== 自定义标题栏 ========== -->
-        <Border x:Name="TitleBar" Height="36"
-                Background="Transparent"
-                BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
-                BorderThickness="0,0,0,1"
-                PointerPressed="OnTitleBarPointerPressed">
-            <Grid ColumnDefinitions="*,Auto">
-                <TextBlock Grid.Column="0" Text="REditor"
-                           VerticalAlignment="Center" HorizontalAlignment="Center"
-                           FontSize="13" FontWeight="Medium"
-                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4"
-                            Margin="0,0,16,0" VerticalAlignment="Center">
-                    <!-- 设置(弹出面板) -->
-                    <Button x:Name="SettingsButton" Classes="icon-button">
-                        <PathIcon Data="{DynamicResource IconSettings}"
-                                  Width="16" Height="16"
-                                  Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                        <Button.Flyout>
-                            <Flyout Placement="BottomEdgeAlignedRight">
-                                <StackPanel Width="280" Spacing="10" Margin="4">
-                                    <TextBlock Text="设置" FontSize="13" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                                    <TextBlock Classes="caption" TextWrapping="Wrap"
-                                               Text="设备名称(iPhone 屏幕镜像列表中显示的名字,接收中修改会自动重启接收)"/>
-                                    <TextBox x:Name="DeviceNameBox"/>
-                                    <Button Classes="primary" Content="应用"
-                                            HorizontalAlignment="Right"
-                                            Click="OnApplyDeviceName"/>
-                                </StackPanel>
-                            </Flyout>
-                        </Button.Flyout>
-                    </Button>
-
-                    <Button x:Name="ThemeButton"
-                            Classes="icon-button"
-                            Click="OnToggleTheme">
-                        <PathIcon Data="{DynamicResource IconSunMoon}"
-                                  Width="16" Height="16"
-                                  Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                    </Button>
-                </StackPanel>
-            </Grid>
-        </Border>
-
-        <!-- ========== 主体:控制栏 + 视频区 ========== -->
-        <Grid Grid.Row="1" RowDefinitions="Auto,*">
-
-            <!-- 控制栏 -->
-            <Border x:Name="ControlBar" Classes="card" Margin="24,20,24,0" Padding="14,12">
-                <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto">
-                    <Button x:Name="MirrorToggleButton" Classes="primary" Content="开始接收"
-                            Click="OnMirrorToggleClicked" VerticalAlignment="Center"/>
-                    <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center" Spacing="2">
-                        <TextBlock x:Name="MirrorStatusText" FontSize="13" FontWeight="Medium"
-                                   Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
-                                   Text="未启动"/>
-                        <TextBlock x:Name="MirrorHintText" Classes="caption" FontSize="12"
-                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                                   Text="启动后,iPhone 控制中心 → 屏幕镜像 → 选择本机;音量可用手机音量键调节"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8"
-                                VerticalAlignment="Center" Margin="0,0,16,0">
-                        <TextBlock Classes="caption" FontSize="12" VerticalAlignment="Center"
-                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                                   Text="增益"/>
-                        <Slider x:Name="GainSlider" Minimum="0" Maximum="2" Value="1" Width="110"
-                                VerticalAlignment="Center"
-                                ValueChanged="OnGainChanged"/>
-                        <TextBlock x:Name="GainText" Classes="caption" FontSize="12" Width="38"
-                                   VerticalAlignment="Center"
-                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                                   Text="100%"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="2"
-                                VerticalAlignment="Center" Margin="0,0,12,0">
-                        <Button x:Name="PinButton" Classes="icon-button" Opacity="0.45"
-                                ToolTip.Tip="窗口置顶" Click="OnToggleTopmost">
-                            <PathIcon Data="{DynamicResource IconPin}" Width="15" Height="15"
-                                      Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                        </Button>
-                        <Button Classes="icon-button" ToolTip.Tip="全屏(双击画面也可切换)"
-                                Click="OnToggleFullscreen">
-                            <PathIcon Data="{DynamicResource IconMaximize}" Width="15" Height="15"
-                                      Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                        </Button>
-                        <Button Classes="icon-button" ToolTip.Tip="无边框展示模式(ESC 退出)"
-                                Click="OnEnterBorderless">
-                            <PathIcon Data="{DynamicResource IconFrame}" Width="15" Height="15"
-                                      Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                        </Button>
-                    </StackPanel>
-                    <TextBlock Grid.Column="4" x:Name="MirrorResolutionText" Classes="caption"
-                               FontSize="12" VerticalAlignment="Center"
-                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-                </Grid>
-            </Border>
-
-            <!-- 视频区:按手机画面比例居中显示,多余区域留黑 -->
-            <Border x:Name="VideoCard" Grid.Row="1" Classes="card" Margin="24,16,24,16" Padding="0"
-                    ClipToBounds="True" Background="Black">
-                <Grid x:Name="VideoArea">
-                    <airplay:AirPlayVideoHost x:Name="VideoHost"
-                                              HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"/>
-
-                    <!-- 空态引导:未连接时显示 -->
-                    <StackPanel x:Name="EmptyState" Spacing="14"
-                                HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <PathIcon Data="{DynamicResource IconMonitor}" Width="44" Height="44"
-                                  Foreground="#40FFFFFF" HorizontalAlignment="Center"/>
-                        <TextBlock x:Name="EmptyStateTitle" Text="尚未开始接收"
-                                   FontSize="15" FontWeight="SemiBold" Foreground="#CCFFFFFF"
-                                   HorizontalAlignment="Center"/>
-                        <StackPanel Spacing="6" HorizontalAlignment="Center">
-                            <TextBlock Text="1. 确保 iPhone 与这台 Mac 连接同一 WiFi"
-                                       FontSize="12" Foreground="#99FFFFFF"/>
-                            <TextBlock Text="2. 打开 iPhone 控制中心 → 屏幕镜像"
-                                       FontSize="12" Foreground="#99FFFFFF"/>
-                            <TextBlock x:Name="GuideDeviceNameText" Text="3. 选择「REditor」"
-                                       FontSize="12" Foreground="#99FFFFFF"/>
-                        </StackPanel>
-                        <TextBlock Classes="caption" FontSize="11" Foreground="#66FFFFFF"
-                                   TextWrapping="Wrap" TextAlignment="Center" MaxWidth="360"
-                                   Text="搜不到设备时,请检查 系统设置 → 隐私与安全性 → 本地网络 中是否已允许本应用"/>
-                    </StackPanel>
-                </Grid>
-            </Border>
+        <!-- 视频区:按手机画面比例居中显示,多余区域留黑 -->
+        <Grid x:Name="VideoArea" Background="Black">
+            <airplay:AirPlayVideoHost x:Name="VideoHost"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"/>
         </Grid>
 
-        <!-- ========== 底部状态栏 ========== -->
-        <Border x:Name="StatusBar" Grid.Row="2" Classes="statusbar">
-            <DockPanel>
-                <TextBlock x:Name="FooterText" Classes="caption" VerticalAlignment="Center"
-                           DockPanel.Dock="Left"/>
-                <TextBlock Classes="caption" VerticalAlignment="Center"
-                           DockPanel.Dock="Right" Text="AirPlay 投屏接收端"/>
-            </DockPanel>
+        <!-- 空态引导:未连接时显示 -->
+        <StackPanel x:Name="EmptyState" Spacing="14" IsHitTestVisible="False"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+            <PathIcon Data="{DynamicResource IconMonitor}" Width="44" Height="44"
+                      Foreground="#40FFFFFF" HorizontalAlignment="Center"/>
+            <TextBlock x:Name="EmptyStateTitle" Text="尚未开始接收"
+                       FontSize="15" FontWeight="SemiBold" Foreground="#CCFFFFFF"
+                       HorizontalAlignment="Center"/>
+            <StackPanel Spacing="6" HorizontalAlignment="Center">
+                <TextBlock Text="1. 确保 iPhone 与这台 Mac 连接同一 WiFi"
+                           FontSize="12" Foreground="#99FFFFFF"/>
+                <TextBlock Text="2. 打开 iPhone 控制中心 → 屏幕镜像"
+                           FontSize="12" Foreground="#99FFFFFF"/>
+                <TextBlock x:Name="GuideDeviceNameText" Text="3. 选择「REditor」"
+                           FontSize="12" Foreground="#99FFFFFF"/>
+            </StackPanel>
+            <TextBlock FontSize="11" Foreground="#66FFFFFF"
+                       TextWrapping="Wrap" TextAlignment="Center" MaxWidth="360"
+                       Text="搜不到设备时,请检查 系统设置 → 隐私与安全性 → 本地网络 中是否已允许本应用"/>
+        </StackPanel>
+
+        <!-- 顶部悬浮栏:渐变遮罩 + 状态文字,兼作窗口拖拽区 -->
+        <Border x:Name="TopBar" Classes="chrome" VerticalAlignment="Top" Height="64"
+                PointerPressed="OnTitleBarPointerPressed">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
+                    <GradientStop Color="#8C000000" Offset="0"/>
+                    <GradientStop Color="#00000000" Offset="1"/>
+                </LinearGradientBrush>
+            </Border.Background>
+            <TextBlock x:Name="StatusText" Text="REditor"
+                       HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,11,0,0"
+                       FontSize="13" FontWeight="Medium" Foreground="#E6FFFFFF"/>
+        </Border>
+
+        <!-- 底部悬浮工具栏:半透明药丸,连接后随鼠标静止自动隐藏 -->
+        <Border x:Name="Toolbar" Classes="chrome"
+                VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,20"
+                Background="#B31C1C1E" BorderBrush="#26FFFFFF" BorderThickness="1"
+                CornerRadius="999" Padding="8,6"
+                BoxShadow="0 4 16 0 #40000000">
+            <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+
+                <Button x:Name="MirrorToggleButton" Classes="pill-primary" Content="开始接收"
+                        Click="OnMirrorToggleClicked" Margin="0,0,4,0"/>
+
+                <Border Width="1" Height="18" Background="#26FFFFFF" Margin="4,0"
+                        VerticalAlignment="Center"/>
+
+                <Button x:Name="PinButton" Classes="pill-button" Opacity="0.45"
+                        ToolTip.Tip="窗口置顶" Click="OnToggleTopmost">
+                    <PathIcon Data="{DynamicResource IconPin}" Width="15" Height="15"
+                              Foreground="#E6FFFFFF"/>
+                </Button>
+                <Button Classes="pill-button" ToolTip.Tip="全屏(双击画面也可切换)"
+                        Click="OnToggleFullscreen">
+                    <PathIcon Data="{DynamicResource IconMaximize}" Width="15" Height="15"
+                              Foreground="#E6FFFFFF"/>
+                </Button>
+                <Button Classes="pill-button" ToolTip.Tip="无边框展示模式(ESC 退出)"
+                        Click="OnEnterBorderless">
+                    <PathIcon Data="{DynamicResource IconFrame}" Width="15" Height="15"
+                              Foreground="#E6FFFFFF"/>
+                </Button>
+
+                <Border Width="1" Height="18" Background="#26FFFFFF" Margin="4,0"
+                        VerticalAlignment="Center"/>
+
+                <PathIcon Data="{DynamicResource IconVolume}" Width="14" Height="14"
+                          Foreground="#99FFFFFF" Margin="6,0,2,0"/>
+                <Slider x:Name="GainSlider" Minimum="0" Maximum="2" Value="1" Width="80"
+                        VerticalAlignment="Center" ValueChanged="OnGainChanged"/>
+                <TextBlock x:Name="GainText" FontSize="11" Width="34" Margin="2,0,0,0"
+                           VerticalAlignment="Center" Foreground="#99FFFFFF" Text="100%"/>
+
+                <Border Width="1" Height="18" Background="#26FFFFFF" Margin="4,0"
+                        VerticalAlignment="Center"/>
+
+                <!-- 设置(弹出面板) -->
+                <Button x:Name="SettingsButton" Classes="pill-button" ToolTip.Tip="设置">
+                    <PathIcon Data="{DynamicResource IconSettings}" Width="15" Height="15"
+                              Foreground="#E6FFFFFF"/>
+                    <Button.Flyout>
+                        <Flyout Placement="Top">
+                            <StackPanel Width="280" Spacing="10" Margin="4">
+                                <TextBlock Text="设置" FontSize="13" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                                <TextBlock Classes="caption" TextWrapping="Wrap"
+                                           Text="设备名称(iPhone 屏幕镜像列表中显示的名字,接收中修改会自动重启接收)"/>
+                                <TextBox x:Name="DeviceNameBox"/>
+                                <TextBlock Classes="caption" Text="外观"/>
+                                <ComboBox x:Name="ThemeCombo" HorizontalAlignment="Stretch">
+                                    <ComboBoxItem>跟随系统</ComboBoxItem>
+                                    <ComboBoxItem>浅色</ComboBoxItem>
+                                    <ComboBoxItem>深色</ComboBoxItem>
+                                </ComboBox>
+                                <Button Classes="primary" Content="应用"
+                                        HorizontalAlignment="Right"
+                                        Click="OnApplySettings"/>
+                            </StackPanel>
+                        </Flyout>
+                    </Button.Flyout>
+                </Button>
+
+            </StackPanel>
         </Border>
 
     </Grid>
