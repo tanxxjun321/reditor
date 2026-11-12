@@ -428,6 +428,40 @@ static void loop_thread_fn() {
 
 /* ----------------------------------------------------------- public API */
 
+/*
+ * Advertise the real display size (backing pixels) and 60 fps, the way
+ * macOS's own AirPlay receiver does. UxPlay's defaults (1920x1080 @ maxFPS
+ * 30) force the iPhone to encode its screen at a fraction of its native
+ * resolution — e.g. a 1290x2796 portrait screen becomes ~498x1080 — and
+ * our window then upscales that tiny stream, which looks visibly blurry
+ * next to Apple's receiver. The client picks the largest stream that fits
+ * the advertised canvas, so advertise what we actually have.
+ */
+static void advertise_display(raop_t *raop) {
+    NSScreen *screen = nil;
+    if (g_video_view) {
+        NSView *view = (NSView *) g_video_view;
+        screen = view.window.screen;
+    }
+    if (!screen) screen = [NSScreen mainScreen];
+
+    int w = 3840, h = 2160;               /* fallback: 4K */
+    if (screen) {
+        CGFloat scale = screen.backingScaleFactor;
+        NSSize pts = screen.frame.size;
+        w = (int) lround(pts.width * scale);
+        h = (int) lround(pts.height * scale);
+    }
+    raop_set_plist(raop, "width", w);
+    raop_set_plist(raop, "height", h);
+    raop_set_plist(raop, "maxFPS", 60);
+    raop_set_plist(raop, "refreshRate", 60);
+    char msg[96];
+    snprintf(msg, sizeof(msg), "advertising display %dx%d @60fps", w, h);
+    emit(AP_EV_LOG, msg);
+}
+
+
 extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx) {
     if (g_running.exchange(true))
         return -1;
@@ -519,6 +553,8 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
         airplay_stop();
         return -5;
     }
+
+    advertise_display(g_raop);
 
     unsigned short tcp[3] = {0, 0, 0};   /* 0 = dynamically assigned */
     unsigned short udp[3] = {0, 0, 0};
