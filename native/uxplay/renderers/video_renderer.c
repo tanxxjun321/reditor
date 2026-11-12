@@ -156,6 +156,19 @@ static gint64  push_stat_window_start = 0;
 static gint64  push_stat_late_sum = 0;
 static gint64  push_stat_late_max = 0;
 
+/* --- decoder tail drain: see drain_decoder_tail below ------------------- */
+static GstElement *vtdec_el = NULL;
+
+/* Swallow the EOS used to trigger a mid-stream drain, so it cannot travel
+ * downstream and end the sink. */
+static GstPadProbeReturn
+swallow_eos_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+    (void) pad; (void) user_data;
+    if (GST_EVENT_TYPE(GST_PAD_PROBE_INFO_EVENT(info)) == GST_EVENT_EOS)
+        return GST_PAD_PROBE_DROP;
+    return GST_PAD_PROBE_OK;
+}
+
 static void push_stats_tick(uint64_t pts_epoch_ns) {
     push_stat_frames++;
     /* arrival lateness: wall clock now vs the frame's (local-mapped) PTS.
@@ -627,7 +640,9 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
                     }
                     gst_object_unref(sink_el);
                 }
-                /* fps probe on the decoder output, to see where frames vanish */
+                /* fps probe on the decoder output, to see where frames vanish;
+                 * also register vtdec for the idle tail drain and swallow the
+                 * EOS used to trigger it (see video_renderer_drain_decoder_tail) */
                 GstIterator *el_it = gst_bin_iterate_elements(GST_BIN(renderer_type[i]->pipeline));
                 GValue el_item = G_VALUE_INIT;
                 while (gst_iterator_next(el_it, &el_item) == GST_ITERATOR_OK) {
@@ -638,8 +653,12 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
                         if (src_pad) {
                             gst_pad_add_probe(src_pad, GST_PAD_PROBE_TYPE_BUFFER,
                                               decoder_stats_probe, NULL, NULL);
+                            gst_pad_add_probe(src_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+                                              swallow_eos_probe, NULL, NULL);
                             gst_object_unref(src_pad);
                         }
+                        if (vtdec_el) gst_object_unref(vtdec_el);
+                        vtdec_el = GST_ELEMENT(gst_object_ref(el));
                     }
                     g_value_reset(&el_item);
                 }
@@ -906,6 +925,27 @@ uint64_t video_renderer_render_buffer_replay(unsigned char* data, int *data_len,
     push_stats_tick(0);
     return 0;
 }
+
+/* vtdec's async queue permanently holds the last few frames (measured: ~3)
+ * until pushed out by later input or a drain. On a VFR stream (static
+ * screen) no later input ever comes, so the mirror would freeze a few
+ * frames before the settled image. Send EOS to the decoder's sink pad: the
+ * base class drains (the held frames are decoded and displayed — the EOS
+ * itself is swallowed by the src-pad probe). EOS alone leaves the decoder
+ * in end-of-stream state and it ignores all further frames (observed), so
+ * follow with FLUSH_START/STOP to reset it; codec state (SPS/PPS) survives
+ * the flush. Foreign data (AUD) and duplicate frames both wedge the decoder
+ * — events are the only safe lever. */
+void video_renderer_drain_decoder_tail(void) {
+    if (!vtdec_el) return;
+    GstPad *sink_pad = gst_element_get_static_pad(vtdec_el, "sink");
+    if (!sink_pad) return;
+    gst_pad_send_event(sink_pad, gst_event_new_eos());
+    gst_pad_send_event(sink_pad, gst_event_new_flush_start());
+    gst_pad_send_event(sink_pad, gst_event_new_flush_stop(TRUE));
+    gst_object_unref(sink_pad);
+}
+
 /* --- end REditor addition ------------------------------------------------- */
 
 void video_renderer_hls_ready() {
@@ -930,6 +970,10 @@ void video_renderer_stop() {
         gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
         //gst_element_set_state (renderer->playbin, GST_STATE_NULL);
      }
+    if (vtdec_el) {   /* REditor: tail-drain target belongs to this pipeline */
+        gst_object_unref(vtdec_el);
+        vtdec_el = NULL;
+    }
 }
 
 void video_renderer_set_device_model(const char *model, const char *name) {

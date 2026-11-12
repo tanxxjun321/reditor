@@ -137,39 +137,35 @@ static std::vector<char> parse_hw_addr(const std::string &str) {
 
 /* ---------------------------------------------------- clock offset sanity */
 
-#define AP_SANITY_ADOPT_NS  3000000000LL   /* |local - remote| <= 3s to adopt offset */
 #define AP_SANITY_SKEW_NS   5000000000LL   /* |pts - local|   >  5s => resync       */
 
-/* The sender->local clock offset is computed from the first packet after a
- * reset. Around pause/resume (iPhone lock/unlock) the client can deliver
- * stale or garbage timestamps; adopting an offset from one poisons every
- * later timestamp (observed: audio scheduled ~5 hours into the future).
- * Only adopt offsets that map the first packet to (roughly) now. */
-static bool clock_offset_ensure(uint64_t remote, uint64_t local) {
-    if (g_clock_offset) return true;
-    int64_t diff = (int64_t) local - (int64_t) remote;
-    if (diff > -AP_SANITY_ADOPT_NS && diff < AP_SANITY_ADOPT_NS) {
-        g_clock_offset = (uint64_t) diff;
-        return true;
-    }
-    emit(AP_EV_LOG, "dropping packet with bogus timestamp while syncing clock");
-    return false;
+/* The sender->local clock offset is (re)adopted from the current packet
+ * whenever there is none, or when the mapped PTS lands more than
+ * AP_SANITY_SKEW_NS from the local clock (client re-based its clock across
+ * lock/unlock, or the NTP sync_offset was polluted under congestion).
+ * Packets are NEVER dropped here: the frame data is always valid — a wrong
+ * offset merely shifts the whole presentation timeline (audio and video
+ * together, so A/V sync is preserved) and the next packet re-converges via
+ * the skew check, while a dropped frame in a VFR stream is never re-sent
+ * (observed: permanent black screen / missing settled frame when a static
+ * screen's tail frames fell into a resync window). Stale frames (sender
+ * backlog) are the catch-up dropper's job, not the clock gate's. */
+static void clock_offset_adopt(uint64_t remote, uint64_t local) {
+    g_clock_offset = (uint64_t) ((int64_t) local - (int64_t) remote);
 }
 
-/* Returns the local-domain PTS for a packet, or false to drop it. */
-static bool map_pts(uint64_t *remote, uint64_t local) {
-    if (!clock_offset_ensure(*remote, local)) return false;
+/* Maps the packet's remote timestamp to the local clock domain in place. */
+static void map_pts(uint64_t *remote, uint64_t local) {
+    if (!g_clock_offset)
+        clock_offset_adopt(*remote, local);
     uint64_t pts = *remote + g_clock_offset;
     int64_t skew = (int64_t) pts - (int64_t) local;
     if (skew > AP_SANITY_SKEW_NS || skew < -AP_SANITY_SKEW_NS) {
-        /* client re-based its clock (e.g. across lock/unlock): resync once */
         emit(AP_EV_LOG, "clock skew detected, resyncing sender clock offset");
-        g_clock_offset = 0;
-        if (!clock_offset_ensure(*remote, local)) return false;
+        clock_offset_adopt(*remote, local);
         pts = *remote + g_clock_offset;
     }
     *remote = pts;
-    return true;
 }
 
 /* ------------------------------------------------ default output tracking */
@@ -221,7 +217,33 @@ static video_geometry_t     g_last_geom = {};
 static std::atomic<bool>    g_video_rebuilding{false};
 static std::atomic<bool>    g_rebuild_scheduled{false};
 static std::atomic<bool>    g_reset_clock_on_rebuild{false};
-static int                  g_late_streak = 0;   /* raop thread only */
+
+/* Idle-stream decoder-tail drain. vtdec's async decode queue permanently
+ * holds the last few frames (measured: ~3) until pushed out by LATER input
+ * or a drain — and this stream is VFR, so when the iPhone screen settles no
+ * further input ever arrives and the mirror freezes a few frames before the
+ * settled image. Once the stream has been idle for a beat, drain the
+ * decoder (EOS at its sink pad + FLUSH reset; see
+ * video_renderer_drain_decoder_tail). Once per idle stretch; g_push_mtx
+ * serializes raop-thread pushes against the GLib-thread drain. */
+#define AP_TAIL_IDLE_NS 300000000LL
+static std::atomic<uint64_t> g_last_video_packet_ns{0};
+static std::atomic<bool>     g_tail_injected{false};
+static std::mutex            g_push_mtx;
+static std::atomic<bool>     g_catchup{false};   /* dropping stale packets until a fresh IDR */
+
+static gboolean tail_flush_cb(void *) {
+    if (!g_running) return G_SOURCE_REMOVE;
+    uint64_t last = g_last_video_packet_ns.load();
+    bool expected = false;
+    if (last && !g_catchup && !g_video_rebuilding.load()
+        && (int64_t) (get_local_time() - last) > AP_TAIL_IDLE_NS
+        && g_tail_injected.compare_exchange_strong(expected, true)) {
+        std::lock_guard<std::mutex> lk(g_push_mtx);
+        video_renderer_drain_decoder_tail();
+    }
+    return G_SOURCE_CONTINUE;
+}
 
 static void start_video_renderer() {
     videoflip_t flips[2] = { NONE, NONE };
@@ -240,11 +262,12 @@ static void start_video_renderer() {
     const char *sink = getenv("REDITOR_SINK");
     if (!sink || !*sink) sink = "glimagesink";
     const bool cpu_sink = !strcmp(sink, "osxvideosink");
-    /* qos=false + max-lateness=-1: never drop a frame for being late and
-     * never ask the decoder to drop either. Sender-side latency (which can
-     * reach hundreds of ms at high resolutions) is handled by re-baselining
-     * the clock offset in cb_video_process instead; dropping P-frames only
-     * ever corrupts the reference chain and collapses the frame rate. */
+    /* qos=false + max-lateness=-1: no dropping inside the pipeline. Sink QoS
+     * is unusable on this stream: it is IPPP with no B-frames, so the
+     * decoder-side dropping QoS triggers corrupts the reference chain and
+     * the output collapses to the IDR rate (observed: 49 fps in, 2.5 fps
+     * out). Stale-data control lives in cb_video_process instead, which
+     * drops whole GOPs receiver-side and resumes at the next fresh IDR. */
     video_renderer_init(g_logger, g_server_name.c_str(), flips,
                         "h264parse", /* rtp_pipeline */ "",
                         /* decoder */ "vtdec",
@@ -425,36 +448,56 @@ static int cb_video_set_codec_and_size(void *cls, video_codec_t codec,
     return video_renderer_choose_codec_and_size(false, codec == VIDEO_CODEC_H265, &geom);
 }
 
+/* Sender-side backlog (encoder/network can't sustain the load, observed
+ * ~330ms up to seconds at high-res 60fps) shows up here as frames whose
+ * mapped PTS is already far in the past at arrival. The mirror must stay
+ * real-time, so stale data is dropped receiver-side — but only whole GOPs:
+ * the stream is IPPP with no B-frames, every P frame references its
+ * predecessor, so dropping an arbitrary frame corrupts the decode chain
+ * (this is also why the sink QoS route collapses to the IDR rate on this
+ * stream). While catching up, everything is dropped until a packet that is
+ * BOTH fresh (sender has drained its backlog) AND contains an IDR; decoding
+ * resumes cleanly from there. Latency is bounded by the threshold plus one
+ * GOP. No clock compensation: re-baselining the offset only hid the delay
+ * and fought the skew detector (offset inflation -> PTS in the future ->
+ * skew reset -> dropped frames). */
+#define AP_CATCHUP_LATE_NS 500000000LL   /* arrival lateness that triggers catch-up */
+
+/* annexb: true if the packet carries an IDR slice NAL (type 5). */
+static bool packet_has_idr(const unsigned char *data, int len) {
+    for (int i = 0; i + 4 < len; i++) {
+        if (!data[i] && !data[i + 1] && !data[i + 2] && data[i + 3] == 1) {
+            if ((data[i + 4] & 0x1f) == 5) return true;
+            i += 4;
+        }
+    }
+    return false;
+}
+
 static void cb_video_process(void *cls, raop_ntp_t *ntp, video_decode_struct *data) {
     (void) cls; (void) ntp;
     if (!g_running) return;
     uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
-    if (!map_pts(&data->ntp_time_remote, local)) return;
-    /* The clock offset is calibrated to the NTP-synced sender clock, so a
-     * frame's PTS tracks its CAPTURE time. ntp_time_local is the NTP-converted
-     * capture time too (not arrival time), so lateness must be measured against
-     * the actual wall clock. When the sender can't sustain the advertised load
-     * (e.g. multi-MP landscape at 60fps), its encoder/network backlog grows
-     * and every frame starts arriving late (observed: ~330ms). The sink then
-     * treats frames as outdated; detect sustained lateness and re-baseline the
-     * offset so the presentation deadline tracks the actual transit delay. */
+    map_pts(&data->ntp_time_remote, local);
     {
         int64_t late_ns = (int64_t) get_local_time() - (int64_t) data->ntp_time_remote;
-        if (late_ns > 250 * 1000000LL) {
-            if (++g_late_streak >= 30) {   /* ~1s of persistently late frames */
-                g_clock_offset += (uint64_t) late_ns;
-                data->ntp_time_remote += (uint64_t) late_ns;
-                g_late_streak = 0;
-                char msg[96];
-                snprintf(msg, sizeof(msg),
-                         "video stream persistently %.0f ms late; re-baselining clock offset",
-                         (double) late_ns / 1e6);
-                emit(AP_EV_LOG, msg);
+        if (late_ns > AP_CATCHUP_LATE_NS) {
+            if (!g_catchup) {
+                g_catchup = true;
+                emit(AP_EV_LOG, "video backlog >500ms, dropping stale frames until a fresh IDR");
             }
-        } else {
-            g_late_streak = 0;
+        }
+        if (g_catchup) {
+            if (late_ns <= AP_CATCHUP_LATE_NS && packet_has_idr(data->data, data->data_len)) {
+                g_catchup = false;
+                emit(AP_EV_LOG, "video caught up, resuming at IDR");
+            } else {
+                return;   /* stale data, or still waiting for a decodable resume point */
+            }
         }
     }
+    g_last_video_packet_ns.store(get_local_time());
+    g_tail_injected.store(false);
     {
         std::lock_guard<std::mutex> lk(g_video_mtx);
         if (g_video_rebuilding.load()) {
@@ -472,6 +515,7 @@ static void cb_video_process(void *cls, raop_ntp_t *ntp, video_decode_struct *da
     }
     int count = 0;
     uint64_t pts_mismatch = 0;
+    std::lock_guard<std::mutex> push_lk(g_push_mtx);
     do {
         pts_mismatch = video_renderer_render_buffer(data->data, &data->data_len,
                                                     &data->nal_count, &data->ntp_time_remote);
@@ -491,7 +535,7 @@ static void cb_audio_process(void *cls, raop_ntp_t *ntp, audio_decode_struct *da
     (void) cls; (void) ntp;
     if (!g_running) return;
     uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
-    if (!map_pts(&data->ntp_time_remote, local)) return;
+    map_pts(&data->ntp_time_remote, local);
     audio_renderer_render_buffer(data->data, &data->data_len, &data->seqnum,
                                  &data->ntp_time_remote);
 }
@@ -579,6 +623,7 @@ static void on_first_video_frame(void *ctx) {
 /* ---------------------------------------------------- GLib loop thread */
 
 static void loop_thread_fn() {
+    guint aud_watch = g_timeout_add(100, tail_flush_cb, nullptr);
     while (g_running) {
         g_loop = g_main_loop_new(nullptr, FALSE);
         g_video_watch  = video_renderer_listen(g_loop, 0);
@@ -600,6 +645,7 @@ static void loop_thread_fn() {
             g_clock_offset = 0;
         }
     }
+    g_source_remove(aud_watch);
 }
 
 } /* extern "C" */
@@ -797,6 +843,9 @@ extern "C" void airplay_stop(void) {
     }
     g_open_connections = 0;
     g_clock_offset = 0;
+    g_catchup = false;
+    g_last_video_packet_ns = 0;
+    g_tail_injected = false;
     g_video_rebuilding = false;
     g_rebuild_scheduled = false;
     g_reset_clock_on_rebuild = false;
