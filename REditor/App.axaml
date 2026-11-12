@@ -60,17 +60,8 @@
         <!-- ============================================================ -->
         <!-- Design Token: 图标 (Lucide Icons PathGeometry)               -->
         <!-- ============================================================ -->
-        <PathGeometry x:Key="IconPlus">M12 5L12 19M5 12L19 12</PathGeometry>
-        <PathGeometry x:Key="IconMinus">M5 12L19 12</PathGeometry>
-        <PathGeometry x:Key="IconX">M18 6L6 18M6 6L18 18</PathGeometry>
-        <PathGeometry x:Key="IconSun">M12 17a5 5 0 100-10 5 5 0 000 10zM12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42</PathGeometry>
-        <PathGeometry x:Key="IconMoon">M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z</PathGeometry>
         <PathGeometry x:Key="IconMonitor">M20 3H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V5a2 2 0 00-2-2zM8 21h8M12 17v4</PathGeometry>
-        <PathGeometry x:Key="IconPalette">M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5c0-.61-.23-1.21-.64-1.67c-.08-.09-.13-.21-.13-.33c0-.28.22-.5.5-.5H16c3.04 0 5.5-2.46 5.5-5.5S19.04 6.5 16 6.5c-.28 0-.5-.22-.5-.5c0-.12.05-.24.13-.33c.46-.52.67-1.17.67-1.84C16.3 2.77 14.53 2 12 2zM7.5 10.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3zm3-4a1.5 1.5 0 100-3 1.5 1.5 0 000 3zm5 0a1.5 1.5 0 100-3 1.5 1.5 0 000 3zm3 4a1.5 1.5 0 100-3 1.5 1.5 0 000 3z</PathGeometry>
         <PathGeometry x:Key="IconSettings">M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2zM12 15.5A3.5 3.5 0 1012 8.5a3.5 3.5 0 000 7z</PathGeometry>
-        <PathGeometry x:Key="IconFileText">M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8</PathGeometry>
-        <PathGeometry x:Key="IconFolderOpen">M2 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2zM2 10h20</PathGeometry>
-        <PathGeometry x:Key="IconSave">M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v13a2 2 0 01-2 2zM17 21v-8H7v8M7 3v5h8</PathGeometry>
         <PathGeometry x:Key="IconSunMoon">M12 3a6 6 0 009 9 9 9 0 11-9-9z</PathGeometry>
     </Application.Resources>
 
@@ -151,41 +142,6 @@
         </Style>
         <Style Selector="Button.icon-button:pointerover /template/ ContentPresenter#PART_ContentPresenter">
             <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
-        </Style>
-
-        <!-- 侧边栏容器 -->
-        <Style Selector="Border.sidebar">
-            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundChromeLowBrush}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}"/>
-            <Setter Property="BorderThickness" Value="0,0,1,0"/>
-        </Style>
-
-        <!-- 侧边栏导航项 -->
-        <Style Selector="ListBoxItem.nav-item">
-            <Setter Property="Padding" Value="12,8"/>
-            <Setter Property="Margin" Value="8,2"/>
-            <Setter Property="CornerRadius" Value="{DynamicResource TokenRadiusMD}"/>
-            <Setter Property="FontSize" Value="13"/>
-            <Setter Property="Transitions">
-                <Transitions>
-                    <BrushTransition Property="Background" Duration="0:0:0.15"/>
-                </Transitions>
-            </Setter>
-        </Style>
-        <Style Selector="ListBoxItem.nav-item:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundListLowBrush}"/>
-        </Style>
-        <Style Selector="ListBoxItem.nav-item:selected /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}"/>
-        </Style>
-        <Style Selector="ListBoxItem.nav-item:selected">
-            <Setter Property="Foreground" Value="#FFFFFF"/>
-        </Style>
-
-        <!-- 工具栏容器 -->
-        <Style Selector="Border.toolbar">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Padding" Value="16,0"/>
         </Style>
 
         <!-- 状态栏容器 -->

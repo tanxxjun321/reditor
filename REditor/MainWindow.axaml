@@ -17,15 +17,34 @@
                 BorderThickness="0,0,0,1"
                 PointerPressed="OnTitleBarPointerPressed">
             <Grid ColumnDefinitions="*,Auto">
-                <!-- 标题 -->
                 <TextBlock Grid.Column="0" Text="REditor"
                            VerticalAlignment="Center" HorizontalAlignment="Center"
                            FontSize="13" FontWeight="Medium"
                            Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
 
-                <!-- 工具栏按钮 -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4"
                             Margin="0,0,16,0" VerticalAlignment="Center">
+                    <!-- 设置(弹出面板) -->
+                    <Button x:Name="SettingsButton" Classes="icon-button">
+                        <PathIcon Data="{DynamicResource IconSettings}"
+                                  Width="16" Height="16"
+                                  Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                        <Button.Flyout>
+                            <Flyout Placement="BottomEdgeAlignedRight">
+                                <StackPanel Width="280" Spacing="10" Margin="4">
+                                    <TextBlock Text="设置" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                                    <TextBlock Classes="caption" TextWrapping="Wrap"
+                                               Text="设备名称(iPhone 屏幕镜像列表中显示的名字,接收中修改会自动重启接收)"/>
+                                    <TextBox x:Name="DeviceNameBox"/>
+                                    <Button Classes="primary" Content="应用"
+                                            HorizontalAlignment="Right"
+                                            Click="OnApplyDeviceName"/>
+                                </StackPanel>
+                            </Flyout>
+                        </Button.Flyout>
+                    </Button>
+
                     <Button x:Name="ThemeButton"
                             Classes="icon-button"
                             Click="OnToggleTheme">
@@ -37,200 +56,80 @@
             </Grid>
         </Border>
 
-        <!-- ========== 主体区域 ========== -->
-        <Grid Grid.Row="1" ColumnDefinitions="220,*">
+        <!-- ========== 主体:控制栏 + 视频区 ========== -->
+        <Grid Grid.Row="1" RowDefinitions="Auto,*">
 
-            <!-- 侧边栏 -->
-            <Border x:Name="Sidebar" Classes="sidebar">
-                <DockPanel>
-                    <!-- Logo + 应用名 -->
-                    <StackPanel DockPanel.Dock="Top" Margin="20,48,20,16">
-                        <Border Width="36" Height="36" CornerRadius="10"
-                                Background="{DynamicResource SystemControlHighlightAccentBrush}"
-                                HorizontalAlignment="Left">
-                            <PathIcon Data="{DynamicResource IconFileText}"
-                                      Width="20" Height="20" Foreground="White"
-                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <TextBlock Text="REditor" FontSize="15" FontWeight="SemiBold"
+            <!-- 控制栏 -->
+            <Border Classes="card" Margin="24,20,24,0" Padding="14,12">
+                <Grid ColumnDefinitions="Auto,*,Auto,Auto">
+                    <Button x:Name="MirrorToggleButton" Classes="primary" Content="开始接收"
+                            Click="OnMirrorToggleClicked" VerticalAlignment="Center"/>
+                    <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center" Spacing="2">
+                        <TextBlock x:Name="MirrorStatusText" FontSize="13" FontWeight="Medium"
                                    Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
-                                   Margin="0,12,0,0"/>
-                        <TextBlock Text="跨平台文本编辑器" FontSize="11"
+                                   Text="未启动"/>
+                        <TextBlock x:Name="MirrorHintText" Classes="caption" FontSize="12"
                                    Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                                   Margin="0,2,0,0"/>
+                                   Text="启动后,iPhone 控制中心 → 屏幕镜像 → 选择本机;音量可用手机音量键调节"/>
                     </StackPanel>
-
-                    <!-- 导航菜单 -->
-                    <ListBox x:Name="NavList" Classes="nav-list" Background="Transparent" BorderThickness="0"
-                             Margin="0,8" SelectionChanged="OnNavSelectionChanged">
-                        <ListBoxItem Classes="nav-item" IsSelected="True">
-                            <StackPanel Orientation="Horizontal" Spacing="12">
-                                <PathIcon Data="{DynamicResource IconFileText}" Width="16" Height="16"
-                                          Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                                <TextBlock Text="编辑" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </ListBoxItem>
-                        <ListBoxItem Classes="nav-item">
-                            <StackPanel Orientation="Horizontal" Spacing="12">
-                                <PathIcon Data="{DynamicResource IconFolderOpen}" Width="16" Height="16"
-                                          Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                                <TextBlock Text="文件" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </ListBoxItem>
-                        <ListBoxItem Classes="nav-item">
-                            <StackPanel Orientation="Horizontal" Spacing="12">
-                                <PathIcon Data="{DynamicResource IconSettings}" Width="16" Height="16"
-                                          Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                                <TextBlock Text="设置" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </ListBoxItem>
-                        <ListBoxItem Classes="nav-item">
-                            <StackPanel Orientation="Horizontal" Spacing="12">
-                                <PathIcon Data="{DynamicResource IconMonitor}" Width="16" Height="16"
-                                          Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                                <TextBlock Text="投屏" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </ListBoxItem>
-                    </ListBox>
-                </DockPanel>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8"
+                                VerticalAlignment="Center" Margin="0,0,16,0">
+                        <TextBlock Classes="caption" FontSize="12" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                                   Text="增益"/>
+                        <Slider x:Name="GainSlider" Minimum="0" Maximum="2" Value="1" Width="110"
+                                VerticalAlignment="Center"
+                                ValueChanged="OnGainChanged"/>
+                        <TextBlock x:Name="GainText" Classes="caption" FontSize="12" Width="38"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                                   Text="100%"/>
+                    </StackPanel>
+                    <TextBlock Grid.Column="3" x:Name="MirrorResolutionText" Classes="caption"
+                               FontSize="12" VerticalAlignment="Center"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                </Grid>
             </Border>
 
-            <!-- 主内容区：编辑器 -->
-            <ScrollViewer Grid.Column="1" x:Name="EditorPage">
-                <StackPanel MaxWidth="720" Margin="48" Spacing="24">
+            <!-- 视频区:按手机画面比例居中显示,多余区域留黑 -->
+            <Border Grid.Row="1" Classes="card" Margin="24,16,24,16" Padding="0"
+                    ClipToBounds="True" Background="Black">
+                <Grid x:Name="VideoArea">
+                    <airplay:AirPlayVideoHost x:Name="VideoHost"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
 
-                    <Border Classes="card">
-                        <StackPanel Spacing="16">
-                            <TextBlock Text="欢迎使用" FontSize="18" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                            <TextBlock Classes="caption" TextWrapping="Wrap"
-                                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                                       FontSize="13" LineHeight="20"
-                                       Text="REditor 是一个基于 Avalonia + .NET 的跨平台桌面编辑器，支持 macOS 和 Windows，具备现代化的界面设计。"/>
-                            <TextBox x:Name="InputBox" PlaceholderText="在这里输入一些文字…"/>
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button Classes="primary" Content="确定" Click="OnGreetClicked"/>
-                                <Button Classes="secondary" Content="清空" Click="OnClearClicked"/>
-                            </StackPanel>
-                            <Border x:Name="OutputCard" IsVisible="False"
-                                    Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
-                                    CornerRadius="6" Padding="14,12">
-                                <TextBlock x:Name="OutputText" TextWrapping="Wrap" FontSize="15"
-                                           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                            </Border>
+                    <!-- 空态引导:未连接时显示 -->
+                    <StackPanel x:Name="EmptyState" Spacing="14"
+                                HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <PathIcon Data="{DynamicResource IconMonitor}" Width="44" Height="44"
+                                  Foreground="#40FFFFFF" HorizontalAlignment="Center"/>
+                        <TextBlock x:Name="EmptyStateTitle" Text="尚未开始接收"
+                                   FontSize="15" FontWeight="SemiBold" Foreground="#CCFFFFFF"
+                                   HorizontalAlignment="Center"/>
+                        <StackPanel Spacing="6" HorizontalAlignment="Center">
+                            <TextBlock Text="1. 确保 iPhone 与这台 Mac 连接同一 WiFi"
+                                       FontSize="12" Foreground="#99FFFFFF"/>
+                            <TextBlock Text="2. 打开 iPhone 控制中心 → 屏幕镜像"
+                                       FontSize="12" Foreground="#99FFFFFF"/>
+                            <TextBlock x:Name="GuideDeviceNameText" Text="3. 选择「REditor」"
+                                       FontSize="12" Foreground="#99FFFFFF"/>
                         </StackPanel>
-                    </Border>
-
-                    <Border Classes="card">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Spacing="8">
-                                <Border Width="36" Height="36" CornerRadius="8"
-                                        Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
-                                        HorizontalAlignment="Left">
-                                    <PathIcon Data="{DynamicResource IconMonitor}" Width="18" Height="18"
-                                              Foreground="{DynamicResource SystemControlHighlightAccentBrush}"
-                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </Border>
-                                <TextBlock Text="跨平台" FontWeight="SemiBold"
-                                           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                                <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
-                                           Text="Windows、macOS、Linux 共用一套代码"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Spacing="8">
-                                <Border Width="36" Height="36" CornerRadius="8"
-                                        Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
-                                        HorizontalAlignment="Left">
-                                    <PathIcon Data="{DynamicResource IconPalette}" Width="18" Height="18"
-                                              Foreground="{DynamicResource SystemControlHighlightAccentBrush}"
-                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </Border>
-                                <TextBlock Text="现代主题" FontWeight="SemiBold"
-                                           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                                <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
-                                           Text="Vibrancy 毛玻璃 + Fluent 设计语言"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="2" Spacing="8">
-                                <Border Width="36" Height="36" CornerRadius="8"
-                                        Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
-                                        HorizontalAlignment="Left">
-                                    <PathIcon Data="{DynamicResource IconSunMoon}" Width="18" Height="18"
-                                              Foreground="{DynamicResource SystemControlHighlightAccentBrush}"
-                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </Border>
-                                <TextBlock Text="深浅色模式" FontWeight="SemiBold"
-                                           Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
-                                <TextBlock Classes="caption" FontSize="12" TextWrapping="Wrap"
-                                           Text="自动跟随系统，支持手动切换"/>
-                            </StackPanel>
-                        </Grid>
-                    </Border>
-
-                </StackPanel>
-            </ScrollViewer>
-
-            <!-- 主内容区：iPhone 投屏 -->
-            <Grid Grid.Column="1" x:Name="MirrorPage" IsVisible="False" RowDefinitions="Auto,*">
-
-                <!-- 控制栏 -->
-                <Border Classes="card" Margin="24,24,24,0" Padding="14,12">
-                    <Grid ColumnDefinitions="Auto,*,Auto,Auto">
-                        <Button x:Name="MirrorToggleButton" Classes="primary" Content="开始接收"
-                                Click="OnMirrorToggleClicked" VerticalAlignment="Center"/>
-                        <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center" Spacing="2">
-                            <TextBlock x:Name="MirrorStatusText" FontSize="13" FontWeight="Medium"
-                                       Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"
-                                       Text="未启动"/>
-                            <TextBlock Classes="caption" FontSize="12"
-                                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                                       Text="启动后,iPhone 控制中心 → 屏幕镜像 → 选择「REditor」;音量可用手机音量键调节"/>
-                        </StackPanel>
-                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8"
-                                    VerticalAlignment="Center" Margin="0,0,16,0">
-                            <TextBlock Classes="caption" FontSize="12" VerticalAlignment="Center"
-                                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                                       Text="增益"/>
-                            <Slider x:Name="GainSlider" Minimum="0" Maximum="2" Value="1" Width="110"
-                                    VerticalAlignment="Center"
-                                    ValueChanged="OnGainChanged"/>
-                            <TextBlock x:Name="GainText" Classes="caption" FontSize="12" Width="38"
-                                       VerticalAlignment="Center"
-                                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                                       Text="100%"/>
-                        </StackPanel>
-                        <TextBlock Grid.Column="3" x:Name="MirrorResolutionText" Classes="caption"
-                                   FontSize="12" VerticalAlignment="Center"
-                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-                    </Grid>
-                </Border>
-
-                <!-- 视频区:按手机画面比例居中显示,多余区域留黑 -->
-                <Border Grid.Row="1" Classes="card" Margin="24" Padding="0" ClipToBounds="True"
-                        Background="Black">
-                    <Grid x:Name="VideoArea">
-                        <airplay:AirPlayVideoHost x:Name="VideoHost"
-                                                  HorizontalAlignment="Center"
-                                                  VerticalAlignment="Center"/>
-                    </Grid>
-                </Border>
-            </Grid>
+                        <TextBlock Classes="caption" FontSize="11" Foreground="#66FFFFFF"
+                                   TextWrapping="Wrap" TextAlignment="Center" MaxWidth="360"
+                                   Text="搜不到设备时,请检查 系统设置 → 隐私与安全性 → 本地网络 中是否已允许本应用"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
         </Grid>
 
         <!-- ========== 底部状态栏 ========== -->
         <Border Grid.Row="2" Classes="statusbar">
             <DockPanel>
-                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="16">
-                    <TextBlock x:Name="FooterText" Classes="caption" VerticalAlignment="Center"/>
-                    <TextBlock Classes="caption" VerticalAlignment="Center" Text="UTF-8"/>
-                </StackPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="16">
-                    <TextBlock Classes="caption" VerticalAlignment="Center" Text="Ln 1, Col 1"/>
-                    <TextBlock Classes="caption" VerticalAlignment="Center" Text="Avalonia 12"/>
-                </StackPanel>
+                <TextBlock x:Name="FooterText" Classes="caption" VerticalAlignment="Center"
+                           DockPanel.Dock="Left"/>
+                <TextBlock Classes="caption" VerticalAlignment="Center"
+                           DockPanel.Dock="Right" Text="AirPlay 投屏接收端"/>
             </DockPanel>
         </Border>
 

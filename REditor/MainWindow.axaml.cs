@@ -14,10 +14,20 @@ using REditor.AirPlay;
 namespace REditor;
 
 public partial class MainWindow : Window {
+    private readonly Settings _settings;
+
     public MainWindow() {
         InitializeComponent();
 
+        _settings = Settings.Load();
         FooterText.Text = $"Ready · {RuntimeInformation.OSDescription}";
+
+        // 恢复持久化的设置
+        GainSlider.Value = _settings.Gain;
+        GainText.Text = $"{(int)(_settings.Gain * 100)}%";
+        DeviceNameBox.Text = _settings.DeviceName;
+        GuideDeviceNameText.Text = $"3. 选择「{_settings.DeviceName}」";
+        ApplySavedTheme();
 
         // 平台适配：仅在 macOS 启用扩展标题栏 + Vibrancy
         bool isMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
@@ -38,7 +48,6 @@ public partial class MainWindow : Window {
 
     protected override void OnOpened(EventArgs e) {
         base.OnOpened(e);
-        UpdateThemeButton();
         VideoHost.Service.ServerEvent += OnAirPlayEvent;
         VideoArea.SizeChanged += (_, _) => UpdateVideoHostSize();
     }
@@ -49,14 +58,6 @@ public partial class MainWindow : Window {
         base.OnClosing(e);
     }
 
-    // ---------- 页面导航 ----------
-
-    private void OnNavSelectionChanged(object? sender, SelectionChangedEventArgs e) {
-        bool mirror = NavList.SelectedIndex == 3;
-        MirrorPage.IsVisible = mirror;
-        EditorPage.IsVisible = !mirror;
-    }
-
     // ---------- iPhone 投屏 ----------
 
     // 视频画面宽高比(w/h),0 表示未知(未连接时视频区填满)
@@ -65,6 +66,10 @@ public partial class MainWindow : Window {
     private void OnGainChanged(object? sender, RangeBaseValueChangedEventArgs e) {
         GainText.Text = $"{(int)(e.NewValue * 100)}%";
         VideoHost.Service.SetGain(e.NewValue);
+        if (Math.Abs(_settings.Gain - e.NewValue) > 0.001) {
+            _settings.Gain = e.NewValue;
+            _settings.Save();
+        }
     }
 
     private void OnMirrorToggleClicked(object? sender, RoutedEventArgs e) {
@@ -74,9 +79,30 @@ public partial class MainWindow : Window {
             return;
         }
         try {
-            service.Start("REditor");
+            service.Start(_settings.DeviceName);
         } catch (Exception ex) {
             MirrorStatusText.Text = $"启动失败:{ex.Message}";
+        }
+    }
+
+    private void OnApplyDeviceName(object? sender, RoutedEventArgs e) {
+        var name = DeviceNameBox.Text?.Trim();
+        if (string.IsNullOrEmpty(name)) return;
+
+        _settings.DeviceName = name;
+        _settings.Save();
+        GuideDeviceNameText.Text = $"3. 选择「{name}」";
+        SettingsButton.Flyout?.Hide();
+
+        // 接收中改名:重启接收使新名字生效
+        var service = VideoHost.Service;
+        if (service.IsRunning) {
+            service.Stop();
+            try {
+                service.Start(name);
+            } catch (Exception ex) {
+                MirrorStatusText.Text = $"启动失败:{ex.Message}";
+            }
         }
     }
 
@@ -118,19 +144,28 @@ public partial class MainWindow : Window {
         }
     }
 
+    /// <summary>空态引导页:未连接时显示,已连接时隐藏。</summary>
+    private void UpdateEmptyState(bool visible, string title) {
+        EmptyState.IsVisible = visible;
+        EmptyStateTitle.Text = title;
+    }
+
     private void ApplyAirPlayEvent(AirPlayService.EventArgs e) {
         switch (e.Type) {
             case AirPlayService.EventType.Waiting:
                 MirrorStatusText.Text = "等待 iPhone 连接…";
                 MirrorToggleButton.Content = "停止接收";
                 MirrorResolutionText.Text = string.Empty;
+                UpdateEmptyState(true, "正在等待 iPhone 连接…");
                 break;
             case AirPlayService.EventType.Connected:
                 MirrorStatusText.Text = $"已连接:{e.Info}";
+                UpdateEmptyState(false, "");
                 break;
             case AirPlayService.EventType.Disconnected:
                 MirrorStatusText.Text = "等待 iPhone 连接…";
                 MirrorResolutionText.Text = string.Empty;
+                UpdateEmptyState(true, "正在等待 iPhone 连接…");
                 break;
             case AirPlayService.EventType.VideoSize:
                 MirrorResolutionText.Text = $"{e.Width} × {e.Height}";
@@ -148,33 +183,28 @@ public partial class MainWindow : Window {
                 MirrorResolutionText.Text = string.Empty;
                 _videoAspect = 0;
                 UpdateVideoHostSize();
+                UpdateEmptyState(true, "尚未开始接收");
                 break;
         }
     }
 
-    private void OnGreetClicked(object? sender, RoutedEventArgs e) {
-        var input = InputBox.Text?.Trim();
-        OutputText.Text = string.IsNullOrEmpty(input)
-            ? "你还没有输入任何内容。"
-            : $"你输入了：{input}";
-        OutputCard.IsVisible = true;
-    }
+    // ---------- 主题 ----------
 
-    private void OnClearClicked(object? sender, RoutedEventArgs e) {
-        InputBox.Text = string.Empty;
-        OutputCard.IsVisible = false;
+    private void ApplySavedTheme() {
+        var app = Application.Current!;
+        app.RequestedThemeVariant = _settings.Theme switch {
+            "Dark" => ThemeVariant.Dark,
+            "Light" => ThemeVariant.Light,
+            _ => ThemeVariant.Default,
+        };
     }
 
     private void OnToggleTheme(object? sender, RoutedEventArgs e) {
         var app = Application.Current!;
-        app.RequestedThemeVariant = ActualThemeVariant == ThemeVariant.Dark
-            ? ThemeVariant.Light
-            : ThemeVariant.Dark;
-        UpdateThemeButton();
-    }
-
-    private void UpdateThemeButton() {
-        // 图标本身不变（太阳月亮合一）
+        bool toDark = ActualThemeVariant != ThemeVariant.Dark;
+        app.RequestedThemeVariant = toDark ? ThemeVariant.Dark : ThemeVariant.Light;
+        _settings.Theme = toDark ? "Dark" : "Light";
+        _settings.Save();
     }
 
     private void OnTitleBarPointerPressed(object? sender, PointerPressedEventArgs e) {
