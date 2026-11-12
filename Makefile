@@ -1,6 +1,6 @@
 .PHONY: run build win mac mac-x64 bridge
 
-run:
+run: bridge
 	dotnet run --project REditor
 
 bridge:

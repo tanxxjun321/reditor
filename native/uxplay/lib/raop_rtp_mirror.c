@@ -198,6 +198,11 @@ raop_rtp_mirror_thread(void *arg)
     bool unsupported_codec = false;
     bool video_stream_suspended = false;
     bool first_packet = true;
+    /* REditor: last stream size reported via video_set_codec_and_size, so a
+     * mid-stream change (device rotation sends a new SPS/PPS packet) can be
+     * reported again instead of being silently ignored */
+    unsigned short stream_width = 0;
+    unsigned short stream_height = 0;
     
     while (1) {
         fd_set rfds;
@@ -628,6 +633,8 @@ raop_rtp_mirror_thread(void *arg)
                             conn_reset = true;
                             break;
                         }
+                        stream_width = (unsigned short) width;
+                        stream_height = (unsigned short) height;
                     } else if (codec != VIDEO_CODEC_H265) {
                         logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "invalid video codec change to H265: codec was set previously");
                         /* drop connection */
@@ -717,11 +724,34 @@ raop_rtp_mirror_thread(void *arg)
                             conn_reset = true;
                             break;
                         }
+                        stream_width = (unsigned short) width;
+                        stream_height = (unsigned short) height;
                     } else if (codec != VIDEO_CODEC_H264) {
                         logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "invalid codec change to H264: codec was set previously");
                         /* drop connection */
                         conn_reset = true;
                         break;
+                    } else if ((unsigned short) width != stream_width || (unsigned short) height != stream_height) {
+                        /* REditor: mid-stream resolution change (device rotation).
+                         * The client sends a fresh SPS/PPS with new dimensions before
+                         * the first IDR at the new size; notify the renderer so it can
+                         * rebuild its pipeline instead of feeding the new size into the
+                         * running decoder (which corrupts hardware decoders). */
+                        logger_log(raop_rtp_mirror->logger, LOGGER_INFO,
+                                   "raop_rtp_mirror: video size change %ux%u -> %ux%u",
+                                   stream_width, stream_height,
+                                   (unsigned short) width, (unsigned short) height);
+                        if (raop_rtp_mirror->callbacks.video_set_codec_and_size(raop_rtp_mirror->callbacks.cls, codec,
+                                                                                (unsigned short) width_source, (unsigned short) height_source,
+                                                                                (unsigned short) x_offset, (unsigned short) y_offset,
+                                                                                (unsigned short) width, (unsigned short) height)  < 0) {
+                            logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "failed to update video size");
+                            /* drop connection */
+                            conn_reset = true;
+                            break;
+                        }
+                        stream_width = (unsigned short) width;
+                        stream_height = (unsigned short) height;
                     }
                     short sps_size = byteutils_get_short_be(payload,6);
                     unsigned char *sequence_parameter_set = payload + 8;

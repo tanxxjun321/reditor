@@ -49,6 +49,7 @@ void video_renderer_set_window_handle(uintptr_t handle) {
 
 /* --- REditor addition: report negotiated video size to the host app ------ */
 #include <stdio.h>
+static logger_t *logger;   /* full definition (with initializer) below */
 static video_caps_callback_t video_caps_cb = NULL;
 static void *video_caps_cb_ctx = NULL;
 
@@ -57,6 +58,128 @@ void video_renderer_set_caps_callback(video_caps_callback_t cb, void *ctx) {
     video_caps_cb_ctx = ctx;
 }
 
+/* one-shot notification for the first buffer reaching the sink after each
+ * pipeline (re)start: lets the host hide a black cover that masks any
+ * uninitialized (green) frame the sink might otherwise flash */
+static video_first_frame_callback_t first_frame_cb = NULL;
+static void *first_frame_cb_ctx = NULL;
+
+void video_renderer_set_first_frame_callback(video_first_frame_callback_t cb, void *ctx) {
+    first_frame_cb = cb;
+    first_frame_cb_ctx = ctx;
+}
+
+static GstPadProbeReturn
+sink_first_buffer_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+    (void) pad; (void) user_data;
+    if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) {
+        if (first_frame_cb) {
+            first_frame_cb(first_frame_cb_ctx);
+        }
+        return GST_PAD_PROBE_REMOVE;   /* one-shot */
+    }
+    return GST_PAD_PROBE_OK;
+}
+
+/* --- REditor addition: fps / drop statistics for diagnosing playback ------ */
+static guint64 sink_stat_frames = 0;
+static gint64  sink_stat_window_start = 0;
+static gint64  sink_stat_late_sum = 0;     /* ns, negative = early */
+static gint64  sink_stat_late_max = 0;
+
+static GstPadProbeReturn
+sink_stats_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+    (void) user_data;
+    if (!(GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER)) {
+        return GST_PAD_PROBE_OK;
+    }
+    sink_stat_frames++;
+    /* how late is this frame relative to its presentation deadline? */
+    GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    GstClockTime pts = GST_BUFFER_PTS(buf);
+    if (GST_CLOCK_TIME_IS_VALID(pts)) {
+        GstElement *sink = gst_pad_get_parent_element(pad);
+        GstClock *clock = sink ? gst_element_get_clock(sink) : NULL;
+        if (clock) {
+            GstClockTime now = gst_clock_get_time(clock);
+            GstClockTime base = gst_element_get_base_time(sink);
+            gst_object_unref(clock);
+            if (GST_CLOCK_TIME_IS_VALID(now) && GST_CLOCK_TIME_IS_VALID(base) && now >= base) {
+                gint64 late = (gint64) ((gint64) (now - base) - (gint64) pts);
+                sink_stat_late_sum += late;
+                if (late > sink_stat_late_max) sink_stat_late_max = late;
+            }
+        }
+        if (sink) gst_object_unref(sink);
+    }
+    gint64 now = g_get_monotonic_time();
+    if (!sink_stat_window_start) {
+        sink_stat_window_start = now;
+    } else if (now - sink_stat_window_start >= 5 * G_TIME_SPAN_SECOND) {
+        logger_log(logger, LOGGER_INFO,
+                   "video sink: rendered %.1f fps over last 5s, lateness avg %.1f ms max %.1f ms",
+                   (double) sink_stat_frames * G_TIME_SPAN_SECOND / (double) (now - sink_stat_window_start),
+                   sink_stat_frames ? (double) sink_stat_late_sum / (double) sink_stat_frames / 1e6 : 0.0,
+                   (double) sink_stat_late_max / 1e6);
+        sink_stat_frames = 0;
+        sink_stat_window_start = now;
+        sink_stat_late_sum = 0;
+        sink_stat_late_max = 0;
+    }
+    return GST_PAD_PROBE_OK;
+}
+
+static guint64 dec_stat_frames = 0;
+static gint64  dec_stat_window_start = 0;
+
+static GstPadProbeReturn
+decoder_stats_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+    (void) pad; (void) user_data;
+    if (!(GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER)) {
+        return GST_PAD_PROBE_OK;
+    }
+    dec_stat_frames++;
+    gint64 now = g_get_monotonic_time();
+    if (!dec_stat_window_start) {
+        dec_stat_window_start = now;
+    } else if (now - dec_stat_window_start >= 5 * G_TIME_SPAN_SECOND) {
+        logger_log(logger, LOGGER_INFO, "vtdec out: %.1f fps over 5s",
+                   (double) dec_stat_frames * G_TIME_SPAN_SECOND / (double) (now - dec_stat_window_start));
+        dec_stat_frames = 0;
+        dec_stat_window_start = now;
+    }
+    return GST_PAD_PROBE_OK;
+}
+
+static guint64 push_stat_frames = 0;
+static gint64  push_stat_window_start = 0;
+static gint64  push_stat_late_sum = 0;
+static gint64  push_stat_late_max = 0;
+
+static void push_stats_tick(uint64_t pts_epoch_ns) {
+    push_stat_frames++;
+    /* arrival lateness: wall clock now vs the frame's (local-mapped) PTS.
+     * Distinguishes "frames arrive late from the sender/network" from
+     * "frames get delayed inside our pipeline". */
+    gint64 late = pts_epoch_ns ? (gint64) g_get_real_time() * 1000 - (gint64) pts_epoch_ns : 0;
+    push_stat_late_sum += late;
+    if (late > push_stat_late_max) push_stat_late_max = late;
+    gint64 now = g_get_monotonic_time();
+    if (!push_stat_window_start) {
+        push_stat_window_start = now;
+    } else if (now - push_stat_window_start >= 5 * G_TIME_SPAN_SECOND) {
+        logger_log(logger, LOGGER_INFO, "video push: %.1f fps into pipeline over 5s, arrival lateness avg %.1f ms max %.1f ms",
+                   (double) push_stat_frames * G_TIME_SPAN_SECOND / (double) (now - push_stat_window_start),
+                   push_stat_frames ? (double) push_stat_late_sum / (double) push_stat_frames / 1e6 : 0.0,
+                   (double) push_stat_late_max / 1e6);
+        push_stat_frames = 0;
+        push_stat_window_start = now;
+        push_stat_late_sum = 0;
+        push_stat_late_max = 0;
+    }
+}
+/* --- end REditor addition ------------------------------------------------- */
+
 static GstPadProbeReturn
 sink_caps_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
     GstEvent *event = GST_PAD_PROBE_INFO_EVENT(info);
@@ -64,6 +187,11 @@ sink_caps_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
         GstCaps *caps = NULL;
         gst_event_parse_caps(event, &caps);
         if (caps && gst_caps_is_fixed(caps)) {
+            /* REditor: log the full negotiated caps so we can tell whether the
+             * path is zero-copy (memory:GLMemory) or fell back to system memory */
+            char *caps_str = gst_caps_to_string(caps);
+            logger_log(logger, LOGGER_INFO, "video sink caps: %s", caps_str);
+            g_free(caps_str);
             const GstStructure *s = gst_caps_get_structure(caps, 0);
             int w = 0, h = 0;
             gst_structure_get_int(s, "width", &w);
@@ -421,9 +549,16 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
             if (!rtp || jpeg_pipeline) {
                 g_string_append(launch, " ! ");
                 append_videoflip(launch, &videoflip[0], &videoflip[1]);
-                g_string_append(launch, converter);
-                g_string_append(launch, " ! ");
-                g_string_append(launch, "videoscale ! ");
+                if (strlen(converter)) {
+                    g_string_append(launch, converter);
+                    g_string_append(launch, " ! ");
+                    /* REditor: GPU converters (glcolorconvert, for a GLMemory
+                     * zero-copy path from vtdec) must not be followed by the
+                     * system-memory videoscale, which would force a download */
+                    if (strncmp(converter, "gl", 2)) {
+                        g_string_append(launch, "videoscale ! ");
+                    }
+                }
                 if (jpeg_pipeline) {
                     g_string_append(launch, " imagefreeze allow-replace=TRUE ! textoverlay name=metadata_overlay ! ");
                 }
@@ -484,10 +619,31 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
                     if (sink_pad) {
                         gst_pad_add_probe(sink_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
                                           sink_caps_probe, NULL, NULL);
+                        gst_pad_add_probe(sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
+                                          sink_first_buffer_probe, NULL, NULL);
+                        gst_pad_add_probe(sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
+                                          sink_stats_probe, NULL, NULL);
                         gst_object_unref(sink_pad);
                     }
                     gst_object_unref(sink_el);
                 }
+                /* fps probe on the decoder output, to see where frames vanish */
+                GstIterator *el_it = gst_bin_iterate_elements(GST_BIN(renderer_type[i]->pipeline));
+                GValue el_item = G_VALUE_INIT;
+                while (gst_iterator_next(el_it, &el_item) == GST_ITERATOR_OK) {
+                    GstElement *el = GST_ELEMENT(g_value_get_object(&el_item));
+                    GstElementFactory *f = gst_element_get_factory(el);
+                    if (f && !strncmp(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(f)), "vtdec", 5)) {
+                        GstPad *src_pad = gst_element_get_static_pad(el, "src");
+                        if (src_pad) {
+                            gst_pad_add_probe(src_pad, GST_PAD_PROBE_TYPE_BUFFER,
+                                              decoder_stats_probe, NULL, NULL);
+                            gst_object_unref(src_pad);
+                        }
+                    }
+                    g_value_reset(&el_item);
+                }
+                gst_iterator_free(el_it);
             }
             g_string_free(launch, TRUE);
             gst_caps_unref(caps);
@@ -666,7 +822,7 @@ void video_renderer_display_jpeg(const void *data, int *data_len) {
 	g_assert(buffer != NULL);
         gst_buffer_fill(buffer, 0, data, *data_len);
         gst_app_src_push_buffer (GST_APP_SRC(renderer->appsrc), buffer);
-    }  
+    }
 }
 
 uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *nal_count, uint64_t *ntp_time) {
@@ -707,6 +863,7 @@ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *n
         }
         gst_buffer_fill(buffer, 0, data, *data_len);
         gst_app_src_push_buffer (GST_APP_SRC(renderer->appsrc), buffer);
+        push_stats_tick(*ntp_time);
 #ifdef X_DISPLAY_FIX
         if (renderer->gst_window && !(renderer->gst_window->window) && renderer->use_x11) {
             X11_search_attempts++;
@@ -726,6 +883,30 @@ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *n
 
 void video_renderer_flush() {
 }
+
+/* --- REditor addition: replay frames buffered across a pipeline rebuild.
+ * Such frames predate the new pipeline's base time; the normal path would
+ * reject them and break the decode chain (missing references after the IDR).
+ * Replay pushes them WITHOUT a timestamp instead: the sink presents them
+ * immediately (fast catch-up), the decode chain stays intact, and the
+ * pipeline base time is untouched so live frames keep perfect A/V sync. --- */
+uint64_t video_renderer_render_buffer_replay(unsigned char* data, int *data_len, int *nal_count, uint64_t *ntp_time) {
+    (void) ntp_time;
+    if (!renderer || !(renderer->appsrc)) {
+        return 0;
+    }
+    if (data[0]) {
+        return 0;   /* undecryptable packet, skip (same as normal path) */
+    }
+    GstBuffer *buffer = gst_buffer_new_allocate(NULL, *data_len, NULL);
+    g_assert(buffer != NULL);
+    /* no GST_BUFFER_PTS: sink plays each frame as soon as it is decoded */
+    gst_buffer_fill(buffer, 0, data, *data_len);
+    gst_app_src_push_buffer (GST_APP_SRC(renderer->appsrc), buffer);
+    push_stats_tick(0);
+    return 0;
+}
+/* --- end REditor addition ------------------------------------------------- */
 
 void video_renderer_hls_ready() {
     GstState state;
@@ -1015,6 +1196,26 @@ static gboolean gstreamer_video_pipeline_bus_callback(GstBus *bus, GstMessage *m
             renderer->eos = TRUE;
         }
         break;
+    case GST_MESSAGE_QOS: {
+        /* REditor: surface frame drops (sink drops frames it cannot present
+         * on time); throttled to one log line per 5s */
+        static guint64 qos_last_dropped = 0;
+        static gint64  qos_last_log = 0;
+        GstFormat fmt;
+        guint64 processed = 0, dropped = 0;
+        gst_message_parse_qos_stats(message, &fmt, &processed, &dropped);
+        gint64 now = g_get_monotonic_time();
+        if (dropped > qos_last_dropped && now - qos_last_log >= 5 * G_TIME_SPAN_SECOND) {
+            logger_log(logger, LOGGER_INFO,
+                       "video QoS: sink dropped %llu frames in total (+%llu since), processed %llu",
+                       (unsigned long long) dropped,
+                       (unsigned long long) (dropped - qos_last_dropped),
+                       (unsigned long long) processed);
+            qos_last_log = now;
+        }
+        qos_last_dropped = dropped;
+        break;
+    }
     case GST_MESSAGE_STATE_CHANGED:
         if (hls_video && strstr(GST_MESSAGE_SRC_NAME(message), "hls-playbin")) {
             GstState old_state, new_state;

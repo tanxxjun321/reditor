@@ -6,8 +6,10 @@
  * Wiring below is a reduced version of uxplay.cpp: mirroring (H.264) +
  * AAC/ALAC audio only, no HLS, no cover-art rendering.
  *
- * Rendering: the video pipeline uses osxvideosink; the renderer's
- * GstVideoOverlay sync handler embeds it into the NSView supplied through
+ * Rendering: the video pipeline is fully GPU zero-copy (h264parse ! vtdec !
+ * glcolorconvert ! glimagesink) — VideoToolbox decodes into GL textures and
+ * glimagesink renders them; no CPU conversion. The renderer's GstVideoOverlay
+ * sync handler embeds the sink into the NSView supplied through
  * airplay_set_video_view(). Audio plays via osxaudiosink.
  */
 
@@ -18,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -71,6 +74,8 @@ static bool               g_audio_sync = true;
 static bool               g_video_sync = true;
 
 static void              *g_video_view = nullptr; /* NSView* from Avalonia     */
+static NSView            *g_cover_view = nil;     /* black cover over the sink */
+static std::atomic<bool>  g_video_frames_seen{false};
 static std::string        g_server_name;
 
 static unsigned char      g_audio_ct = 0;         /* active stream's codec      */
@@ -193,17 +198,58 @@ static const AudioObjectPropertyAddress kDefaultOutputAddr = {
 
 /* ------------------------------------------------------- renderer control */
 
+/* Decoder: hardware (VideoToolbox "vtdec"). vtdec cannot absorb a mid-stream
+ * resolution change (iPhone rotation delivers a new SPS in-band -> heap
+ * corruption / green frames), so resolution changes are handled by rebuilding
+ * the whole pipeline: cb_video_set_codec_and_size detects the new size,
+ * cb_video_process buffers packets (starting at the SPS/PPS+IDR packet that
+ * always follows), and the GLib loop thread rebuilds and then flushes the
+ * buffer into the fresh pipeline. The decode chain stays unbroken from the
+ * IDR on, so no green/garbled frames can appear; frames that are late for
+ * display after the rebuild are dropped cleanly by the sink's QoS. */
+
+/* video packets buffered while the pipeline is rebuilt (rotation) */
+struct PendingPacket {
+    std::vector<unsigned char> data;
+    int      nal_count = 0;
+    uint64_t pts       = 0;    /* already mapped to local time */
+};
+static std::mutex           g_video_mtx;          /* guards the four below   */
+static std::vector<PendingPacket> g_pending_video;
+static bool                 g_have_geom = false;
+static video_geometry_t     g_last_geom = {};
+static std::atomic<bool>    g_video_rebuilding{false};
+static std::atomic<bool>    g_rebuild_scheduled{false};
+static std::atomic<bool>    g_reset_clock_on_rebuild{false};
+static int                  g_late_streak = 0;   /* raop thread only */
+
 static void start_video_renderer() {
     videoflip_t flips[2] = { NONE, NONE };
-    /* Decoder: force software (avdec_h264) instead of decodebin/vtdec.
-     * VideoToolbox corrupts the heap when the stream changes resolution
-     * mid-flight (iPhone rotation delivers a new SPS in-band); avdec
-     * handles it cleanly. See test: alternate portrait/landscape Annex-B
-     * into "h264parse ! vtdec" -> crash; "h264parse ! avdec_h264" -> fine. */
+    /* mask the sink with a black cover until the first decoded frame arrives:
+     * a freshly created osxvideosink can otherwise flash an uninitialized
+     * (green) frame at stream start and at every rebuild (rotation) */
+    g_video_frames_seen = false;
+    if (g_cover_view) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            g_cover_view.hidden = NO;
+        });
+    }
+    /* REDITOR_SINK overrides the sink for A/B diagnosis:
+     * glimagesink (default, zero-copy GL), caopengllayersink (GL RGBA),
+     * osxvideosink (CPU path), fakesink (no rendering, isolates decode) */
+    const char *sink = getenv("REDITOR_SINK");
+    if (!sink || !*sink) sink = "glimagesink";
+    const bool cpu_sink = !strcmp(sink, "osxvideosink");
+    /* qos=false + max-lateness=-1: never drop a frame for being late and
+     * never ask the decoder to drop either. Sender-side latency (which can
+     * reach hundreds of ms at high resolutions) is handled by re-baselining
+     * the clock offset in cb_video_process instead; dropping P-frames only
+     * ever corrupts the reference chain and collapses the frame rate. */
     video_renderer_init(g_logger, g_server_name.c_str(), flips,
                         "h264parse", /* rtp_pipeline */ "",
-                        /* decoder */ "avdec_h264", /* converter */ "videoconvert",
-                        "osxvideosink", /* sink options */ "",
+                        /* decoder */ "vtdec",
+                        /* converter */ cpu_sink ? "videoconvert" : "glcolorconvert",
+                        sink, /* sink options */ " qos=false max-lateness=-1",
                         /* fullscreen */ false, g_video_sync,
                         /* h265 */ false, /* coverart */ false,
                         /* playbin_version */ 3, /* uri */ nullptr);
@@ -212,23 +258,84 @@ static void start_video_renderer() {
     video_renderer_start();
 }
 
-/* Runs on the GLib loop thread: rebuild the mirror pipeline after a reset. */
-static gboolean rebuild_video_cb(gpointer) {
-    if (!g_running) return G_SOURCE_REMOVE;
-    if (g_video_watch) { g_source_remove(g_video_watch); g_video_watch = 0; }
+/* Push the packets buffered during a rebuild into the fresh pipeline.
+ * Must run after the new pipeline is PLAYING. */
+static void flush_pending_video() {
+    for (;;) {
+        std::vector<PendingPacket> pending;
+        {
+            std::lock_guard<std::mutex> lk(g_video_mtx);
+            if (g_pending_video.empty()) {
+                /* nothing more will be buffered once the flag is down;
+                 * clear it under the lock so cb_video_process cannot race
+                 * a final packet into the buffer behind our back */
+                g_video_rebuilding.store(false);
+                return;
+            }
+            pending.swap(g_pending_video);
+        }
+        /* replay without timestamps: the frames predate the new pipeline's
+         * base time; the sink presents them immediately (fast catch-up, no
+         * gap in the decode chain) and live frames keep perfect A/V sync */
+        for (auto &p : pending) {
+            int len = (int) p.data.size();
+            int nal = p.nal_count;
+            uint64_t pts = p.pts;
+            video_renderer_render_buffer_replay(p.data.data(), &len, &nal, &pts);
+        }
+        char msg[64];
+        snprintf(msg, sizeof(msg), "rebuilt video pipeline, replayed %zu buffered packets",
+                 pending.size());
+        emit(AP_EV_LOG, msg);
+    }
+}
+
+/* Stop, destroy and recreate the mirror pipeline, then re-select the codec
+ * with the most recent geometry. Must run on the GLib loop thread. */
+static void rebuild_video_pipeline() {
     video_renderer_stop();
     video_renderer_destroy();
     start_video_renderer();
-    g_clock_offset = 0;
+    video_geometry_t geom;
+    bool have_geom;
+    {
+        std::lock_guard<std::mutex> lk(g_video_mtx);
+        geom = g_last_geom;
+        have_geom = g_have_geom;
+    }
+    if (have_geom)
+        video_renderer_choose_codec_and_size(false, /* h265 */ false, &geom);
+}
+
+/* Runs on the GLib loop thread: rebuild the mirror pipeline after a reset. */
+static gboolean rebuild_video_cb(gpointer) {
+    g_rebuild_scheduled = false;
+    if (!g_running) {
+        g_video_rebuilding = false;
+        return G_SOURCE_REMOVE;
+    }
+    if (g_video_watch) { g_source_remove(g_video_watch); g_video_watch = 0; }
+    rebuild_video_pipeline();
+    if (g_reset_clock_on_rebuild.exchange(false)) {
+        g_clock_offset = 0;
+        std::lock_guard<std::mutex> lk(g_video_mtx);
+        g_pending_video.clear();   /* buffered pts belong to the old clock */
+    }
     if (g_loop)
         g_video_watch = video_renderer_listen(g_loop, 0);
+    flush_pending_video();         /* also clears g_video_rebuilding */
     return G_SOURCE_REMOVE;
 }
 
-static void request_video_rebuild() {
+static void request_video_rebuild(bool reset_clock) {
+    if (reset_clock) g_reset_clock_on_rebuild = true;
+    bool expected = false;
+    if (!g_rebuild_scheduled.compare_exchange_strong(expected, true))
+        return;                                  /* one already queued */
     if (g_loop) {
-        GMainContext *ctx = g_main_loop_get_context(g_loop);
-        if (ctx) g_idle_add(rebuild_video_cb, nullptr);
+        g_idle_add(rebuild_video_cb, nullptr);
+    } else {
+        g_rebuild_scheduled = false;
     }
 }
 
@@ -263,7 +370,7 @@ static void cb_conn_reset(void *cls, int reason) {
     (void) cls;
     emit(AP_EV_ERROR, reason == 1 ? "lost connection with client"
                                   : "connection reset");
-    request_video_rebuild();
+    request_video_rebuild(true);
 }
 
 static void cb_video_reset(void *cls, reset_type_t type) {
@@ -271,7 +378,7 @@ static void cb_video_reset(void *cls, reset_type_t type) {
     switch (type) {
     case RESET_TYPE_NOHOLD:
     case RESET_TYPE_RTP_SHUTDOWN:
-        request_video_rebuild();
+        request_video_rebuild(true);
         break;
     default:
         break;
@@ -291,6 +398,30 @@ static int cb_video_set_codec_and_size(void *cls, video_codec_t codec,
     geom.width = width;
     geom.height = height;
     emit(AP_EV_VIDEO_SIZE, nullptr, (int) width, (int) height);
+    {
+        std::lock_guard<std::mutex> lk(g_video_mtx);
+        if (g_have_geom && (geom.width != g_last_geom.width ||
+                            geom.height != g_last_geom.height)) {
+            /* resolution change (rotation): buffer the incoming packets and
+             * rebuild the pipeline around the new size instead of letting the
+             * decoder see a mid-stream SPS change. The next data packet
+             * carries the new SPS/PPS + IDR, so the new pipeline starts on a
+             * clean keyframe. */
+            g_last_geom = geom;
+            g_video_rebuilding = true;
+            char msg[96];
+            snprintf(msg, sizeof(msg), "video size changed to %dx%d, rebuilding pipeline",
+                     (int) width, (int) height);
+            emit(AP_EV_LOG, msg);
+            request_video_rebuild(false);   /* keep the session clock offset */
+            return 0;
+        }
+        bool already = g_have_geom;
+        g_last_geom = geom;
+        g_have_geom = true;
+        if (already)
+            return 0;                       /* same size again (resume etc.) */
+    }
     return video_renderer_choose_codec_and_size(false, codec == VIDEO_CODEC_H265, &geom);
 }
 
@@ -299,6 +430,46 @@ static void cb_video_process(void *cls, raop_ntp_t *ntp, video_decode_struct *da
     if (!g_running) return;
     uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
     if (!map_pts(&data->ntp_time_remote, local)) return;
+    /* The clock offset is calibrated to the NTP-synced sender clock, so a
+     * frame's PTS tracks its CAPTURE time. ntp_time_local is the NTP-converted
+     * capture time too (not arrival time), so lateness must be measured against
+     * the actual wall clock. When the sender can't sustain the advertised load
+     * (e.g. multi-MP landscape at 60fps), its encoder/network backlog grows
+     * and every frame starts arriving late (observed: ~330ms). The sink then
+     * treats frames as outdated; detect sustained lateness and re-baseline the
+     * offset so the presentation deadline tracks the actual transit delay. */
+    {
+        int64_t late_ns = (int64_t) get_local_time() - (int64_t) data->ntp_time_remote;
+        if (late_ns > 250 * 1000000LL) {
+            if (++g_late_streak >= 30) {   /* ~1s of persistently late frames */
+                g_clock_offset += (uint64_t) late_ns;
+                data->ntp_time_remote += (uint64_t) late_ns;
+                g_late_streak = 0;
+                char msg[96];
+                snprintf(msg, sizeof(msg),
+                         "video stream persistently %.0f ms late; re-baselining clock offset",
+                         (double) late_ns / 1e6);
+                emit(AP_EV_LOG, msg);
+            }
+        } else {
+            g_late_streak = 0;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_video_mtx);
+        if (g_video_rebuilding.load()) {
+            /* pipeline is being rebuilt for a new resolution: buffer instead
+             * of feeding new-size data into the old decoder */
+            if (g_pending_video.size() < 1024) {
+                PendingPacket p;
+                p.data.assign(data->data, data->data + data->data_len);
+                p.nal_count = data->nal_count;
+                p.pts = data->ntp_time_remote;
+                g_pending_video.push_back(std::move(p));
+            }
+            return;
+        }
+    }
     int count = 0;
     uint64_t pts_mismatch = 0;
     do {
@@ -396,6 +567,15 @@ static void on_video_caps(int width, int height, void *ctx) {
     emit(AP_EV_VIDEO_SIZE, nullptr, width, height);
 }
 
+/* first buffer reached the sink after a pipeline (re)start: uncover video */
+static void on_first_video_frame(void *ctx) {
+    (void) ctx;
+    g_video_frames_seen = true;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        g_cover_view.hidden = YES;
+    });
+}
+
 /* ---------------------------------------------------- GLib loop thread */
 
 static void loop_thread_fn() {
@@ -416,9 +596,7 @@ static void loop_thread_fn() {
             /* video pipeline errored (uxplay's bus watch quits the loop):
              * rebuild it and keep serving */
             emit(AP_EV_ERROR, "video pipeline reset");
-            video_renderer_stop();
-            video_renderer_destroy();
-            start_video_renderer();
+            rebuild_video_pipeline();
             g_clock_offset = 0;
         }
     }
@@ -429,14 +607,20 @@ static void loop_thread_fn() {
 /* ----------------------------------------------------------- public API */
 
 /*
- * Advertise the real display size (backing pixels) and 60 fps, the way
- * macOS's own AirPlay receiver does. UxPlay's defaults (1920x1080 @ maxFPS
- * 30) force the iPhone to encode its screen at a fraction of its native
- * resolution — e.g. a 1290x2796 portrait screen becomes ~498x1080 — and
- * our window then upscales that tiny stream, which looks visibly blurry
- * next to Apple's receiver. The client picks the largest stream that fits
- * the advertised canvas, so advertise what we actually have.
+ * Advertise a SQUARE canvas capped at 2560px per edge, plus 60 fps.
+ *
+ * The client picks the largest stream that fits the advertised canvas while
+ * keeping its own aspect ratio, and happily scales beyond its panel's native
+ * resolution to fill a bigger one (observed: a 2556x1179 iPhone landscape
+ * screen became a 3024x1398 stream on a 3024-wide display — 40% pure
+ * upscaled pixels, wasted encoder throughput and bandwidth, and the sender
+ * fell behind by ~330ms). A square canvas sized to the iPhone panel's long
+ * edge (2556; Pro Max 2796) makes BOTH orientations stream at native
+ * resolution: nothing upscaled (no waste), nothing downscaled (full detail).
+ * Rendering adapts to the actual stream size either way.
  */
+#define AP_MAX_ADVERTISED_DIM 2560
+
 static void advertise_display(raop_t *raop) {
     NSScreen *screen = nil;
     if (g_video_view) {
@@ -445,19 +629,19 @@ static void advertise_display(raop_t *raop) {
     }
     if (!screen) screen = [NSScreen mainScreen];
 
-    int w = 3840, h = 2160;               /* fallback: 4K */
+    int edge = AP_MAX_ADVERTISED_DIM;
     if (screen) {
         CGFloat scale = screen.backingScaleFactor;
         NSSize pts = screen.frame.size;
-        w = (int) lround(pts.width * scale);
-        h = (int) lround(pts.height * scale);
+        int longest = (int) lround(MAX(pts.width, pts.height) * scale);
+        if (longest < edge) edge = longest;
     }
-    raop_set_plist(raop, "width", w);
-    raop_set_plist(raop, "height", h);
+    raop_set_plist(raop, "width", edge);
+    raop_set_plist(raop, "height", edge);
     raop_set_plist(raop, "maxFPS", 60);
     raop_set_plist(raop, "refreshRate", 60);
     char msg[96];
-    snprintf(msg, sizeof(msg), "advertising display %dx%d @60fps", w, h);
+    snprintf(msg, sizeof(msg), "advertising display %dx%d @60fps", edge, edge);
     emit(AP_EV_LOG, msg);
 }
 
@@ -477,11 +661,12 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
     }
 
     g_logger = logger_init();
-    logger_set_level(g_logger, LOGGER_INFO);
+    logger_set_level(g_logger, LOGGER_DEBUG);   /* REditor: verbose while diagnosing */
     logger_set_callback(g_logger, bridge_log_callback, nullptr);
 
     audio_renderer_init(g_logger, "osxaudiosink", &g_audio_sync, &g_video_sync, "");
     video_renderer_set_caps_callback(on_video_caps, nullptr);
+    video_renderer_set_first_frame_callback(on_first_video_frame, nullptr);
     start_video_renderer();
 
     AudioObjectAddPropertyListener(kAudioObjectSystemObject, &kDefaultOutputAddr,
@@ -612,6 +797,15 @@ extern "C" void airplay_stop(void) {
     }
     g_open_connections = 0;
     g_clock_offset = 0;
+    g_video_rebuilding = false;
+    g_rebuild_scheduled = false;
+    g_reset_clock_on_rebuild = false;
+    g_video_frames_seen = false;
+    {
+        std::lock_guard<std::mutex> lk(g_video_mtx);
+        g_pending_video.clear();
+        g_have_geom = false;
+    }
     emit(AP_EV_STOPPED);
 }
 
@@ -649,6 +843,19 @@ extern "C" void *airplay_create_video_view(void) {
         view = [[APPassthroughVideoView alloc] initWithFrame:NSZeroRect];
         view.wantsLayer = YES;
         view.layer.backgroundColor = NSColor.blackColor.CGColor;
+        /* black cover above the sink's GL layer (zPosition wins over sublayer
+         * add-order); shown while a pipeline (re)starts so the sink's initial
+         * uninitialized frame is never visible, hidden on the first real
+         * frame. Lives inside the passthrough view, so it cannot block mouse
+         * input. Starts visible: the idle view is black anyway. */
+        NSView *cover = [[NSView alloc] initWithFrame:view.bounds];
+        cover.wantsLayer = YES;
+        cover.layer.backgroundColor = NSColor.blackColor.CGColor;
+        cover.layer.zPosition = 1000;
+        cover.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        cover.hidden = g_video_frames_seen;
+        [view addSubview:cover];
+        g_cover_view = cover;   /* retained by the superview */
     };
     if ([NSThread isMainThread])
         make();
@@ -659,6 +866,7 @@ extern "C" void *airplay_create_video_view(void) {
 
 extern "C" void airplay_release_video_view(void *ptr) {
     if (!ptr) return;
+    g_cover_view = nil;
     dispatch_async(dispatch_get_main_queue(), ^{
         NSView *view = (NSView *) CFBridgingRelease(ptr);
         [view removeFromSuperview];

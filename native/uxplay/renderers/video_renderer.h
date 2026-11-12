@@ -84,6 +84,10 @@ unsigned int video_renderer_listen(void *loop, int id);
 bool video_renderer_eos_watch();
 void video_renderer_hls_set_volume(double volume);
 void video_renderer_set_window_handle(uintptr_t handle);
+/* REditor additions */
+uint64_t video_renderer_render_buffer_replay(unsigned char* data, int *data_len, int *nal_count, uint64_t *ntp_time);
+typedef void (*video_first_frame_callback_t)(void *ctx);
+void video_renderer_set_first_frame_callback(video_first_frame_callback_t cb, void *ctx);
 /* REditor addition: size-change notification (fires on any caps renegotiation) */
 typedef void (*video_caps_callback_t)(int width, int height, void *ctx);
 void video_renderer_set_caps_callback(video_caps_callback_t cb, void *ctx);
