@@ -52,6 +52,13 @@ void  airplay_set_video_view(void *view);
 /* App-side gain multiplier, 0.0 .. 3.0 (1.0 = keep the client's volume). */
 void  airplay_set_volume(double volume);
 
+/*
+ * Hide the mouse cursor until the user moves it (NSCursor
+ * setHiddenUntilMouseMoves:). Used when the overlay chrome auto-hides
+ * during mirroring, e.g. in fullscreen. macOS no-op safe to call anytime.
+ */
+void  airplay_hide_cursor_until_move(void);
+
 #ifdef __cplusplus
 }
 #endif

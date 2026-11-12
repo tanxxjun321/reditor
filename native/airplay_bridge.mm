@@ -629,3 +629,9 @@ extern "C" void airplay_release_video_view(void *ptr) {
         /* ARC releases view at end of scope */
     });
 }
+
+extern "C" void airplay_hide_cursor_until_move(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSCursor setHiddenUntilMouseMoves:YES];
+    });
+}

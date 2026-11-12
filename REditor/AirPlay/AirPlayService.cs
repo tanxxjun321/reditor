@@ -66,6 +66,9 @@ public sealed class AirPlayService : IDisposable {
     /// <summary>App-side gain multiplier (1.0 = follow the phone's volume).</summary>
     public void SetGain(double gain) => NativeBridge.airplay_set_volume(gain);
 
+    /// <summary>Hide the cursor until the mouse moves (macOS NSCursor). Call when chrome auto-hides.</summary>
+    public void HideCursorUntilMouseMoves() => NativeBridge.airplay_hide_cursor_until_move();
+
     private void OnNativeEvent(IntPtr ctx, NativeBridge.NativeEvent ev, IntPtr info, int width, int height) {
         string? text = info == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(info);
         var type = (EventType)ev;
@@ -104,5 +107,8 @@ public sealed class AirPlayService : IDisposable {
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void airplay_set_volume(double gain);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void airplay_hide_cursor_until_move();
     }
 }

@@ -82,6 +82,8 @@ public partial class MainWindow : Window {
         TopBar.IsHitTestVisible = false;
         Toolbar.Opacity = 0;
         Toolbar.IsHitTestVisible = false;
+        // 光标随悬浮层一起隐藏,鼠标一动自动恢复(macOS 原生行为)
+        if (_isMacOS) VideoHost.Service.HideCursorUntilMouseMoves();
     }
 
     protected override void OnPointerMoved(PointerEventArgs e) {
@@ -102,10 +104,19 @@ public partial class MainWindow : Window {
     private string _resolutionText = "";
 
     private void OnGainChanged(object? sender, RangeBaseValueChangedEventArgs e) {
-        GainText.Text = $"{(int)(e.NewValue * 100)}%";
-        VideoHost.Service.SetGain(e.NewValue);
-        if (Math.Abs(_settings.Gain - e.NewValue) > 0.001) {
-            _settings.Gain = e.NewValue;
+        double v = e.NewValue;
+        // 吸附:拖进 100% 附近时归位,否则滑杆上很难精确选中 100%
+        if (Math.Abs(v - 1.0) < 0.05) {
+            if (Math.Abs(GainSlider.Value - 1.0) > 0.0001) {
+                GainSlider.Value = 1.0; // 再次触发本事件,走 v == 1.0 分支
+                return;
+            }
+            v = 1.0;
+        }
+        GainText.Text = $"{(int)Math.Round(v * 100)}%";
+        VideoHost.Service.SetGain(v);
+        if (Math.Abs(_settings.Gain - v) > 0.001) {
+            _settings.Gain = v;
             _settings.Save();
         }
     }

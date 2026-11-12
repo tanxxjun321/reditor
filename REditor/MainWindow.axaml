@@ -22,7 +22,7 @@
         <!-- 空态引导:未连接时显示 -->
         <StackPanel x:Name="EmptyState" Spacing="14" IsHitTestVisible="False"
                     HorizontalAlignment="Center" VerticalAlignment="Center">
-            <PathIcon Data="{DynamicResource IconMonitor}" Width="44" Height="44"
+            <PathIcon Data="{DynamicResource IconCast}" Width="44" Height="44"
                       Foreground="#40FFFFFF" HorizontalAlignment="Center"/>
             <TextBlock x:Name="EmptyStateTitle" Text="尚未开始接收"
                        FontSize="15" FontWeight="SemiBold" Foreground="#CCFFFFFF"
