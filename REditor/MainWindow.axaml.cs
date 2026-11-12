@@ -13,7 +13,10 @@ namespace REditor;
 
 public partial class MainWindow : Window {
     private readonly Settings _settings;
+    private readonly AirPlayService _service = new();
     private readonly bool _isMacOS;
+    private IntPtr _videoViewHandle;
+    private IntPtr _windowHandle;
 
     public MainWindow() {
         InitializeComponent();
@@ -47,9 +50,13 @@ public partial class MainWindow : Window {
 
     protected override void OnOpened(EventArgs e) {
         base.OnOpened(e);
-        VideoHost.Service.ServerEvent += OnAirPlayEvent;
-        VideoArea.SizeChanged += (_, _) => UpdateVideoHostSize();
-        VideoArea.PointerPressed += OnVideoAreaPointerPressed;
+        _service.ServerEvent += OnAirPlayEvent;
+        // 视频视图嵌入窗口视图层级的最底部(悬浮层之下),见 airplay_attach_video_view
+        var platformHandle = TryGetPlatformHandle();
+        if (_isMacOS && platformHandle is { HandleDescriptor: "NSWindow" }) {
+            _windowHandle = platformHandle.Handle;
+            _videoViewHandle = _service.AttachVideoView(_windowHandle);
+        }
         if (SettingsButton.Flyout is Flyout flyout) {
             flyout.Opened += (_, _) => _flyoutOpen = true;
             flyout.Closed += (_, _) => _flyoutOpen = false;
@@ -57,8 +64,12 @@ public partial class MainWindow : Window {
     }
 
     protected override void OnClosing(WindowClosingEventArgs e) {
-        VideoHost.Service.ServerEvent -= OnAirPlayEvent;
-        VideoHost.Service.Dispose();
+        _service.ServerEvent -= OnAirPlayEvent;
+        _service.Dispose();
+        if (_videoViewHandle != IntPtr.Zero) {
+            _service.DetachVideoView(_videoViewHandle);
+            _videoViewHandle = IntPtr.Zero;
+        }
         base.OnClosing(e);
     }
 
@@ -84,7 +95,7 @@ public partial class MainWindow : Window {
         Toolbar.IsHitTestVisible = false;
         // 光标随悬浮层一起隐藏,鼠标一动自动恢复(macOS 原生行为);仅全屏时才隐藏光标
         if (_isMacOS && WindowState == WindowState.FullScreen)
-            VideoHost.Service.HideCursorUntilMouseMoves();
+            _service.HideCursorUntilMouseMoves();
     }
 
     /// <summary>悬浮层在连接中即自动隐藏(全屏/窗口模式一致);光标隐藏是全屏专属,见 HideChrome。</summary>
@@ -96,18 +107,33 @@ public partial class MainWindow : Window {
         if (ShouldAutoHideChrome) _chromeTimer.Start();
     }
 
+    // 进入全屏前的窗口位置尺寸,用于退出全屏时恢复(Avalonia 恢复的尺寸会少一截标题栏高度)
+    private (Size size, PixelPoint pos)? _preFullscreenBounds;
+
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change) {
         base.OnPropertyChanged(change);
         if (change.Property != WindowStateProperty) return;
         var oldState = change.GetOldValue<WindowState>();
         var newState = change.GetNewValue<WindowState>();
 
-        // 退出全屏后 macOS 会把系统标题栏还给窗口;重新应用扩展标题栏设置
+        if (_isMacOS && newState == WindowState.FullScreen && oldState != WindowState.FullScreen)
+            _preFullscreenBounds = (new Size(Width, Height), Position);
+
+        // 退出全屏后 macOS 会把系统标题栏还给窗口;重新应用扩展标题栏设置,
+        // 恢复窗口尺寸,并重置窗口为不透明 + 隐藏标题栏材质(见 airplay_window_chrome_fixup)
         if (_isMacOS && oldState == WindowState.FullScreen && newState != WindowState.FullScreen) {
             ExtendClientAreaToDecorationsHint = false;
             Dispatcher.UIThread.Post(() => {
                 ExtendClientAreaToDecorationsHint = true;
                 ExtendClientAreaTitleBarHeightHint = 28;
+                if (_preFullscreenBounds is { } bounds) {
+                    _preFullscreenBounds = null;
+                    Position = bounds.pos;
+                    Width = bounds.size.Width;
+                    Height = bounds.size.Height;
+                }
+                if (_windowHandle != IntPtr.Zero)
+                    _service.FixupWindowChrome(_windowHandle);
             }, DispatcherPriority.Loaded);
         }
 
@@ -124,9 +150,6 @@ public partial class MainWindow : Window {
 
     // ---------- iPhone 投屏 ----------
 
-    // 视频画面宽高比(w/h),0 表示未知(未连接时视频区填满)
-    private double _videoAspect;
-
     // 顶部状态文字的组成部分
     private string _statusText = "REditor";
     private string _resolutionText = "";
@@ -142,7 +165,7 @@ public partial class MainWindow : Window {
             v = 1.0;
         }
         GainText.Text = $"{(int)Math.Round(v * 100)}%";
-        VideoHost.Service.SetGain(v);
+        _service.SetGain(v);
         if (Math.Abs(_settings.Gain - v) > 0.001) {
             _settings.Gain = v;
             _settings.Save();
@@ -150,7 +173,7 @@ public partial class MainWindow : Window {
     }
 
     private void OnMirrorToggleClicked(object? sender, RoutedEventArgs e) {
-        var service = VideoHost.Service;
+        var service = _service;
         if (service.IsRunning) {
             service.Stop();
             return;
@@ -175,7 +198,7 @@ public partial class MainWindow : Window {
             GuideDeviceNameText.Text = $"3. 选择「{name}」";
 
             // 接收中改名:重启接收使新名字生效
-            var service = VideoHost.Service;
+            var service = _service;
             if (service.IsRunning) {
                 service.Stop();
                 try {
@@ -216,25 +239,6 @@ public partial class MainWindow : Window {
         } catch { /* 日志失败不影响功能 */ }
     }
 
-    /// <summary>让视频宿主区保持与手机画面相同的宽高比(多余区域留黑)。</summary>
-    private void UpdateVideoHostSize() {
-        if (_videoAspect <= 0) {
-            VideoHost.Width = double.NaN;
-            VideoHost.Height = double.NaN;
-            return;
-        }
-        double availW = VideoArea.Bounds.Width;
-        double availH = VideoArea.Bounds.Height;
-        if (availW <= 0 || availH <= 0) return;
-        if (availW / availH > _videoAspect) {
-            VideoHost.Height = availH;
-            VideoHost.Width = availH * _videoAspect;
-        } else {
-            VideoHost.Width = availW;
-            VideoHost.Height = availW / _videoAspect;
-        }
-    }
-
     /// <summary>空态引导页:未连接时显示,已连接时隐藏。</summary>
     private void UpdateEmptyState(bool visible, string title) {
         EmptyState.IsVisible = visible;
@@ -268,10 +272,6 @@ public partial class MainWindow : Window {
             case AirPlayService.EventType.VideoSize:
                 _resolutionText = $"{e.Width} × {e.Height}";
                 RefreshStatus();
-                if (e.Width > 0 && e.Height > 0) {
-                    _videoAspect = (double)e.Width / e.Height;
-                    UpdateVideoHostSize();
-                }
                 break;
             case AirPlayService.EventType.Error:
                 SetStatus($"错误:{e.Info}");
@@ -283,8 +283,6 @@ public partial class MainWindow : Window {
                 SetStatus("REditor");
                 MirrorToggleButton.Content = "开始接收";
                 _resolutionText = "";
-                _videoAspect = 0;
-                UpdateVideoHostSize();
                 UpdateEmptyState(true, "尚未开始接收");
                 break;
         }
@@ -309,8 +307,8 @@ public partial class MainWindow : Window {
             : WindowState.FullScreen;
     }
 
-    private void OnVideoAreaPointerPressed(object? sender, PointerPressedEventArgs e) {
-        // 视频视图是事件穿透的,双击画面任意位置都会到达这里
+    private void OnBackgroundPointerPressed(object? sender, PointerPressedEventArgs e) {
+        // 视频渲染在 Avalonia 之下的原生视图里,双击窗口任意位置都会到达这里
         if (e.ClickCount == 2) OnToggleFullscreen(sender, e);
     }
 

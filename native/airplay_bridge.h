@@ -36,18 +36,27 @@ int  airplay_start(const char *server_name, ap_event_cb cb, void *ctx);
 void airplay_stop(void);
 
 /*
- * Create / release the NSView that hosts the video. Must be paired:
- * the returned pointer is retained and ownership passes to the caller.
- * airplay_release_video_view releases it (on the main thread).
+ * Embed the video view into the Avalonia window (pass its NSWindow*), placed
+ * BELOW Avalonia's own view so the managed overlay chrome renders above the
+ * video. The window's contentView is swapped for a plain container: video
+ * view at the bottom (its black layer doubles as the window backdrop and the
+ * sink letterboxes inside it), Avalonia's view back on top. Requires
+ * TransparencyLevelHint="Transparent" so Avalonia renders with alpha and the
+ * video shows through; the window is flipped back to opaque inside (the
+ * video view covers the whole content area), which keeps the
+ * pre-transparency title bar behavior.
+ * Returns the retained video view; pass it to airplay_detach_video_view
+ * before the window closes.
  */
-void *airplay_create_video_view(void);
-void  airplay_release_video_view(void *view);
+void *airplay_attach_video_view(void *nswindow);
+void  airplay_detach_video_view(void *view);
 
 /*
- * Hand the NSView to the video pipeline. May be called before or after
- * airplay_start; the handle is applied when the pipeline asks for a window.
+ * Re-assert the transparent-window chrome fixes (opaque window, Avalonia's
+ * title bar backdrop hidden) after macOS undoes them on fullscreen exit.
+ * Call from the UI thread once the window has settled back to normal.
  */
-void  airplay_set_video_view(void *view);
+void  airplay_window_chrome_fixup(void *nswindow);
 
 /* App-side gain multiplier, 0.0 .. 3.0 (1.0 = keep the client's volume). */
 void  airplay_set_volume(double volume);

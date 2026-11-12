@@ -809,9 +809,129 @@ extern "C" void airplay_stop(void) {
     emit(AP_EV_STOPPED);
 }
 
-extern "C" void airplay_set_video_view(void *view) {
-    g_video_view = view;
-    video_renderer_set_window_handle((uintptr_t) view);
+/* ------------------------------------------------------------- NSView */
+
+/*
+ * Video host view that ignores all mouse input: hitTest: returns nil so
+ * events fall through to the views underneath. (The view now sits BELOW
+ * Avalonia's view in the window hierarchy, so input already goes to Avalonia
+ * first — the override is kept as a safety net.)
+ */
+@interface APPassthroughVideoView : NSView
+@end
+@implementation APPassthroughVideoView
+- (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
+@end
+
+/* Main thread only. */
+static NSView *make_video_view() {
+    NSView *view = [[APPassthroughVideoView alloc] initWithFrame:NSZeroRect];
+    view.wantsLayer = YES;
+    view.layer.backgroundColor = NSColor.blackColor.CGColor;
+    /* black cover above the sink's GL layer (zPosition wins over sublayer
+     * add-order); shown while a pipeline (re)starts so the sink's initial
+     * uninitialized frame is never visible, hidden on the first real frame.
+     * Lives inside the passthrough view, so it cannot block mouse input.
+     * Starts visible: the idle view is black anyway. */
+    NSView *cover = [[NSView alloc] initWithFrame:view.bounds];
+    cover.wantsLayer = YES;
+    cover.layer.backgroundColor = NSColor.blackColor.CGColor;
+    cover.layer.zPosition = 1000;
+    cover.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    cover.hidden = g_video_frames_seen;
+    [view addSubview:cover];
+    g_cover_view = cover;   /* retained by the superview */
+    return view;
+}
+
+/*
+ * Avalonia draws its entire UI — including the floating chrome — into the
+ * window's contentView (AutoFitContentView, with AvnView inside), and any
+ * NSView added above it (e.g. via NativeControlHost) always covers that
+ * chrome: native views win z-order against the view's own rendered content.
+ * So instead the contentView is swapped for a plain container: the video view
+ * sits at the BOTTOM (its black layer doubles as the window backdrop;
+ * glimagesink letterboxes inside it), AutoFitContentView goes back on top,
+ * and the window is transparent (TransparencyLevelHint="Transparent") so the
+ * video shows through wherever Avalonia doesn't paint.
+ */
+/*
+ * Chrome fixes for the transparent window, applied at attach and re-asserted
+ * via airplay_window_chrome_fixup after fullscreen exit (macOS / Avalonia
+ * re-applies the transparency mode and title bar state on the way out):
+ *
+ * 1. Hide Avalonia's own title bar backdrop inside AutoFitContentView
+ *    (_titleBarMaterial: a 28pt NSVisualEffectView, _titleBarUnderline: an
+ *    NSBox separator). With an opaque Avalonia background they were never
+ *    visible; now that Avalonia renders with alpha they show through the
+ *    transparent top area as a gray band. Avalonia only re-shows them for
+ *    the OSXThickTitleBar chrome hint, which this app never uses.
+ * 2. Flip the window back to opaque black. Avalonia made it non-opaque for
+ *    TransparencyLevelHint="Transparent", and a non-opaque window makes
+ *    AppKit draw the system title bar material above the contentView when
+ *    the window is key (titlebarAppearsTransparent is ignored there). The
+ *    video view fills the whole content area, so nothing ever needs to show
+ *    through to the desktop.
+ */
+static void apply_chrome_fixes(NSWindow *win) {
+    /* win.contentView is our container; Avalonia's view is the top subview */
+    for (NSView *s in win.contentView.subviews.lastObject.subviews) {
+        if ([s isKindOfClass:NSVisualEffectView.class] && s.frame.size.height <= 64)
+            s.hidden = YES;
+        else if ([s isKindOfClass:NSBox.class])
+            s.hidden = YES;
+    }
+    win.opaque = YES;
+    win.backgroundColor = NSColor.blackColor;
+}
+
+/* Main thread. */
+extern "C" void airplay_window_chrome_fixup(void *window_ptr) {
+    apply_chrome_fixes((NSWindow *) window_ptr);
+}
+
+extern "C" void *airplay_attach_video_view(void *window_ptr) {
+    __block NSView *video = nil;
+    void (^attach)(void) = ^{
+        NSWindow *win = (NSWindow *) window_ptr;
+        NSView *avn = win.contentView;
+        video = make_video_view();
+        NSView *container = [[NSView alloc] initWithFrame:avn.frame];
+        container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        win.contentView = container;   /* detaches avn */
+        video.frame = container.bounds;
+        video.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [container addSubview:video];
+        avn.frame = container.bounds;
+        avn.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [container addSubview:avn];
+        [win makeFirstResponder:avn];    /* re-adding resigns first responder */
+        apply_chrome_fixes(win);
+    };
+    if ([NSThread isMainThread])
+        attach();
+    else
+        dispatch_sync(dispatch_get_main_queue(), attach);
+    g_video_view = (void *) CFBridgingRetain(video);
+    video_renderer_set_window_handle((uintptr_t) video);
+    return g_video_view;
+}
+
+extern "C" void airplay_detach_video_view(void *ptr) {
+    if (!ptr) return;
+    g_cover_view = nil;
+    g_video_view = nullptr;
+    video_renderer_set_window_handle(0);
+    void (^detach)(void) = ^{
+        NSView *video = (NSView *) CFBridgingRelease(ptr);
+        [video removeFromSuperview];
+        /* the container stays as contentView with Avalonia's view inside;
+         * ARC releases video at end of scope */
+    };
+    if ([NSThread isMainThread])
+        detach();
+    else
+        dispatch_async(dispatch_get_main_queue(), detach);
 }
 
 /* App-side gain multiplier (0 .. 3), applied on top of the client volume. */
@@ -822,57 +942,7 @@ extern "C" void airplay_set_volume(double gain) {
     apply_volume();
 }
 
-/* ------------------------------------------------------------- NSView */
-
-/*
- * Video host view that ignores all mouse input: hitTest: returns nil so
- * every event falls through to Avalonia's view underneath. Required for
- * the overlay UI (auto-hiding toolbar, double-click fullscreen) to work
- * over the video area. The sink renders into this view's layer, which is
- * unaffected by hit-testing.
- */
-@interface APPassthroughVideoView : NSView
-@end
-@implementation APPassthroughVideoView
-- (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
-@end
-
-extern "C" void *airplay_create_video_view(void) {
-    __block NSView *view = nil;
-    void (^make)(void) = ^{
-        view = [[APPassthroughVideoView alloc] initWithFrame:NSZeroRect];
-        view.wantsLayer = YES;
-        view.layer.backgroundColor = NSColor.blackColor.CGColor;
-        /* black cover above the sink's GL layer (zPosition wins over sublayer
-         * add-order); shown while a pipeline (re)starts so the sink's initial
-         * uninitialized frame is never visible, hidden on the first real
-         * frame. Lives inside the passthrough view, so it cannot block mouse
-         * input. Starts visible: the idle view is black anyway. */
-        NSView *cover = [[NSView alloc] initWithFrame:view.bounds];
-        cover.wantsLayer = YES;
-        cover.layer.backgroundColor = NSColor.blackColor.CGColor;
-        cover.layer.zPosition = 1000;
-        cover.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        cover.hidden = g_video_frames_seen;
-        [view addSubview:cover];
-        g_cover_view = cover;   /* retained by the superview */
-    };
-    if ([NSThread isMainThread])
-        make();
-    else
-        dispatch_sync(dispatch_get_main_queue(), make);
-    return (void *) CFBridgingRetain(view);
-}
-
-extern "C" void airplay_release_video_view(void *ptr) {
-    if (!ptr) return;
-    g_cover_view = nil;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSView *view = (NSView *) CFBridgingRelease(ptr);
-        [view removeFromSuperview];
-        /* ARC releases view at end of scope */
-    });
-}
+/* ------------------------------------------------------------- cursor */
 
 extern "C" void airplay_hide_cursor_until_move(void) {
     dispatch_async(dispatch_get_main_queue(), ^{

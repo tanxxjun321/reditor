@@ -2,22 +2,20 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:airplay="using:REditor.AirPlay"
         mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="600"
         x:Class="REditor.MainWindow"
         Width="960" Height="600" MinWidth="480" MinHeight="360"
-        Background="Black"
+        Background="Transparent"
+        TransparencyLevelHint="Transparent"
         Title="REditor">
 
-    <!-- 窗口即画面:视频铺满,所有控制项悬浮在画面上 -->
-    <Grid>
-
-        <!-- 视频区:按手机画面比例居中显示,多余区域留黑 -->
-        <Grid x:Name="VideoArea" Background="Black">
-            <airplay:AirPlayVideoHost x:Name="VideoHost"
-                                      HorizontalAlignment="Center"
-                                      VerticalAlignment="Center"/>
-        </Grid>
+    <!--
+      窗口即画面:视频由原生视图渲染在窗口视图层级的最底部(兼作黑色背景,
+      sink 自动按比例留黑边),Avalonia 内容透明叠加其上,悬浮层永远在视频之上。
+      根 Grid 的 Transparent 背景用于命中测试(鼠标移动唤醒悬浮层、双击全屏)。
+    -->
+    <Grid x:Name="RootArea" Background="Transparent"
+          PointerPressed="OnBackgroundPointerPressed">
 
         <!-- 空态引导:未连接时显示 -->
         <StackPanel x:Name="EmptyState" Spacing="14" IsHitTestVisible="False"

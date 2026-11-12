@@ -56,12 +56,22 @@ public sealed class AirPlayService : IDisposable {
         IsRunning = false;
     }
 
-    /// <summary>Called by AirPlayVideoHost when its NSView is created.</summary>
-    internal void AttachVideoView(IntPtr view) => NativeBridge.airplay_set_video_view(view);
+    /// <summary>
+    /// Embed the video view into the window (NSWindow handle), placed below
+    /// Avalonia's view so the overlay chrome renders above the video.
+    /// Returns the video view handle for <see cref="DetachVideoView"/>.
+    /// </summary>
+    internal IntPtr AttachVideoView(IntPtr nsWindow) => NativeBridge.airplay_attach_video_view(nsWindow);
 
-    internal IntPtr CreateVideoView() => NativeBridge.airplay_create_video_view();
+    /// <summary>Remove the video view embedded by <see cref="AttachVideoView"/>.</summary>
+    internal void DetachVideoView(IntPtr view) => NativeBridge.airplay_detach_video_view(view);
 
-    internal void ReleaseVideoView(IntPtr view) => NativeBridge.airplay_release_video_view(view);
+    /// <summary>
+    /// Re-assert the transparent-window chrome fixes (opaque window, Avalonia's
+    /// title bar backdrop hidden) after macOS undoes them on fullscreen exit.
+    /// Must be called on the UI thread.
+    /// </summary>
+    internal void FixupWindowChrome(IntPtr nsWindow) => NativeBridge.airplay_window_chrome_fixup(nsWindow);
 
     /// <summary>App-side gain multiplier (1.0 = follow the phone's volume).</summary>
     public void SetGain(double gain) => NativeBridge.airplay_set_volume(gain);
@@ -97,13 +107,13 @@ public sealed class AirPlayService : IDisposable {
         internal static extern void airplay_stop();
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern IntPtr airplay_create_video_view();
+        internal static extern IntPtr airplay_attach_video_view(IntPtr nsWindow);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern void airplay_release_video_view(IntPtr view);
+        internal static extern void airplay_detach_video_view(IntPtr view);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern void airplay_set_video_view(IntPtr view);
+        internal static extern void airplay_window_chrome_fixup(IntPtr nsWindow);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void airplay_set_volume(double gain);
