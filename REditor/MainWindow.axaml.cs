@@ -15,6 +15,7 @@ namespace REditor;
 
 public partial class MainWindow : Window {
     private readonly Settings _settings;
+    private readonly bool _isMacOS;
 
     public MainWindow() {
         InitializeComponent();
@@ -27,11 +28,13 @@ public partial class MainWindow : Window {
         GainText.Text = $"{(int)(_settings.Gain * 100)}%";
         DeviceNameBox.Text = _settings.DeviceName;
         GuideDeviceNameText.Text = $"3. 选择「{_settings.DeviceName}」";
+        Topmost = _settings.Topmost;
+        UpdatePinButton();
         ApplySavedTheme();
 
         // 平台适配：仅在 macOS 启用扩展标题栏 + Vibrancy
-        bool isMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
-        if (isMacOS) {
+        _isMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
+        if (_isMacOS) {
             TitleBar.IsVisible = true;
 
             // macOS 原生方案：保留 NSWindow（自带圆角、阴影、描边、交通灯按钮），
@@ -50,6 +53,9 @@ public partial class MainWindow : Window {
         base.OnOpened(e);
         VideoHost.Service.ServerEvent += OnAirPlayEvent;
         VideoArea.SizeChanged += (_, _) => UpdateVideoHostSize();
+        // 双击画面切换全屏(注意:NSView 区域的手势被原生视图消费,
+        // 只有黑色留边区域能触发,全屏按钮是主要入口)
+        VideoArea.PointerPressed += OnVideoAreaPointerPressed;
     }
 
     protected override void OnClosing(WindowClosingEventArgs e) {
@@ -185,6 +191,53 @@ public partial class MainWindow : Window {
                 UpdateVideoHostSize();
                 UpdateEmptyState(true, "尚未开始接收");
                 break;
+        }
+    }
+
+    // ---------- 窗口模式:置顶 / 全屏 / 无边框 ----------
+
+    private bool _borderless;
+
+    private void OnToggleTopmost(object? sender, RoutedEventArgs e) {
+        Topmost = !Topmost;
+        _settings.Topmost = Topmost;
+        _settings.Save();
+        UpdatePinButton();
+    }
+
+    private void UpdatePinButton() => PinButton.Opacity = Topmost ? 1.0 : 0.45;
+
+    private void OnToggleFullscreen(object? sender, RoutedEventArgs e) {
+        WindowState = WindowState == WindowState.FullScreen
+            ? WindowState.Normal
+            : WindowState.FullScreen;
+    }
+
+    private void OnVideoAreaPointerPressed(object? sender, PointerPressedEventArgs e) {
+        if (e.ClickCount == 2) OnToggleFullscreen(sender, e);
+    }
+
+    private void OnEnterBorderless(object? sender, RoutedEventArgs e) => SetBorderless(true);
+
+    /// <summary>无边框展示模式:隐藏标题栏/控制栏/状态栏,视频区铺满窗口。</summary>
+    private void SetBorderless(bool on) {
+        _borderless = on;
+        TitleBar.IsVisible = !on && _isMacOS;
+        ControlBar.IsVisible = !on;
+        StatusBar.IsVisible = !on;
+        VideoCard.Margin = on ? new Thickness(0) : new Thickness(24, 16, 24, 16);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e) {
+        base.OnKeyDown(e);
+        if (e.Key != Key.Escape) return;
+        // ESC 逐层退出:先退出全屏,再退出无边框
+        if (WindowState == WindowState.FullScreen) {
+            WindowState = WindowState.Normal;
+            e.Handled = true;
+        } else if (_borderless) {
+            SetBorderless(false);
+            e.Handled = true;
         }
     }
 

@@ -16,6 +16,9 @@ public sealed class Settings {
     /// <summary>App 内音频增益,1.0 = 跟随手机音量。</summary>
     public double Gain { get; set; } = 1.0;
 
+    /// <summary>窗口置顶。</summary>
+    public bool Topmost { get; set; }
+
     /// <summary>"Dark" / "Light" / null = 跟随系统。</summary>
     public string? Theme { get; set; }
 

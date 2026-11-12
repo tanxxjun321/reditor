@@ -60,8 +60,8 @@
         <Grid Grid.Row="1" RowDefinitions="Auto,*">
 
             <!-- 控制栏 -->
-            <Border Classes="card" Margin="24,20,24,0" Padding="14,12">
-                <Grid ColumnDefinitions="Auto,*,Auto,Auto">
+            <Border x:Name="ControlBar" Classes="card" Margin="24,20,24,0" Padding="14,12">
+                <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto">
                     <Button x:Name="MirrorToggleButton" Classes="primary" Content="开始接收"
                             Click="OnMirrorToggleClicked" VerticalAlignment="Center"/>
                     <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center" Spacing="2">
@@ -85,14 +85,32 @@
                                    Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
                                    Text="100%"/>
                     </StackPanel>
-                    <TextBlock Grid.Column="3" x:Name="MirrorResolutionText" Classes="caption"
+                    <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="2"
+                                VerticalAlignment="Center" Margin="0,0,12,0">
+                        <Button x:Name="PinButton" Classes="icon-button" Opacity="0.45"
+                                ToolTip.Tip="窗口置顶" Click="OnToggleTopmost">
+                            <PathIcon Data="{DynamicResource IconPin}" Width="15" Height="15"
+                                      Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                        </Button>
+                        <Button Classes="icon-button" ToolTip.Tip="全屏(双击画面也可切换)"
+                                Click="OnToggleFullscreen">
+                            <PathIcon Data="{DynamicResource IconMaximize}" Width="15" Height="15"
+                                      Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                        </Button>
+                        <Button Classes="icon-button" ToolTip.Tip="无边框展示模式(ESC 退出)"
+                                Click="OnEnterBorderless">
+                            <PathIcon Data="{DynamicResource IconFrame}" Width="15" Height="15"
+                                      Foreground="{DynamicResource SystemControlForegroundBaseHighBrush}"/>
+                        </Button>
+                    </StackPanel>
+                    <TextBlock Grid.Column="4" x:Name="MirrorResolutionText" Classes="caption"
                                FontSize="12" VerticalAlignment="Center"
                                Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
                 </Grid>
             </Border>
 
             <!-- 视频区:按手机画面比例居中显示,多余区域留黑 -->
-            <Border Grid.Row="1" Classes="card" Margin="24,16,24,16" Padding="0"
+            <Border x:Name="VideoCard" Grid.Row="1" Classes="card" Margin="24,16,24,16" Padding="0"
                     ClipToBounds="True" Background="Black">
                 <Grid x:Name="VideoArea">
                     <airplay:AirPlayVideoHost x:Name="VideoHost"
@@ -124,7 +142,7 @@
         </Grid>
 
         <!-- ========== 底部状态栏 ========== -->
-        <Border Grid.Row="2" Classes="statusbar">
+        <Border x:Name="StatusBar" Grid.Row="2" Classes="statusbar">
             <DockPanel>
                 <TextBlock x:Name="FooterText" Classes="caption" VerticalAlignment="Center"
                            DockPanel.Dock="Left"/>
