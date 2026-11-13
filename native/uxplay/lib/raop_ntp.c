@@ -29,6 +29,10 @@
 #include "raop.h"
 #include "threads.h"
 #include "compat.h"
+
+/* REditor: implemented in airplay_bridge.mm; called after each successful
+ * timing exchange as a connection-level keepalive signal */
+extern void airplay_ntp_activity(void);
 #include "netutils.h"
 #include "byteutils.h"
 #include "utils.h"
@@ -830,6 +834,7 @@ raop_ntp_thread(void *arg) {
                         raop_ntp->sync_delay = data_sorted[0].delay;
                         MUTEX_UNLOCK(raop_ntp->sync_params_mutex);
                         have_offset = true;
+                        airplay_ntp_activity();   /* REditor: keepalive tick */
                         logger_log(raop_ntp->logger, LOGGER_DEBUG, "current client NTP offset (secs) = %9.6f, root_distance (secs) = %8.6f, is_synced = %s\n",
                                    (double) sync_offset / SECOND_IN_NSECS, (double) root_distance_nsec / SECOND_IN_NSECS, is_synced ? "TRUE" : "FALSE");
                     }

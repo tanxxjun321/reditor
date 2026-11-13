@@ -86,8 +86,6 @@ void video_renderer_hls_set_volume(double volume);
 void video_renderer_set_window_handle(uintptr_t handle);
 /* REditor additions */
 uint64_t video_renderer_render_buffer_replay(unsigned char* data, int *data_len, int *nal_count, uint64_t *ntp_time);
-/* drain vtdec's held tail frames (idle stream only), keeping the decoder alive */
-void video_renderer_drain_decoder_tail(void);
 typedef void (*video_first_frame_callback_t)(void *ctx);
 void video_renderer_set_first_frame_callback(video_first_frame_callback_t cb, void *ctx);
 /* REditor addition: size-change notification (fires on any caps renegotiation) */
