@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened Runtime 例外:
+     - allow-jit: CoreCLR 即时编译需要(AOT 发布时可移除)
+     - disable-library-validation: GStreamer 在运行时按路径加载插件 dylib,
+       这些插件虽随包重签,但 .NET/GStreamer 也会加载系统外组件,保守放行 -->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict>
+</plist>

@@ -3,11 +3,11 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="600"
-        x:Class="REditor.MainWindow"
+        x:Class="AirMirror.MainWindow"
         Width="960" Height="600" MinWidth="480" MinHeight="360"
         Background="Transparent"
         TransparencyLevelHint="Transparent"
-        Title="REditor">
+        Title="AirMirror">
 
     <!--
       窗口即画面:视频由原生视图渲染在窗口视图层级的最底部(兼作黑色背景,
@@ -30,7 +30,7 @@
                            FontSize="12" Foreground="#99FFFFFF"/>
                 <TextBlock Text="2. 打开 iPhone 控制中心 → 屏幕镜像"
                            FontSize="12" Foreground="#99FFFFFF"/>
-                <TextBlock x:Name="GuideDeviceNameText" Text="3. 选择「REditor」"
+                <TextBlock x:Name="GuideDeviceNameText" Text="3. 选择「AirMirror」"
                            FontSize="12" Foreground="#99FFFFFF"/>
             </StackPanel>
             <StackPanel Spacing="6" HorizontalAlignment="Center">
@@ -53,7 +53,7 @@
                     <GradientStop Color="#00000000" Offset="1"/>
                 </LinearGradientBrush>
             </Border.Background>
-            <TextBlock x:Name="StatusText" Text="REditor"
+            <TextBlock x:Name="StatusText" Text="AirMirror"
                        HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,11,0,0"
                        FontSize="13" FontWeight="Medium" Foreground="#E6FFFFFF"/>
         </Border>

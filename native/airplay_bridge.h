@@ -1,5 +1,5 @@
 /*
- * airplay_bridge.h — C API bridging REditor (.NET) to the UxPlay AirPlay
+ * airplay_bridge.h — C API bridging AirMirror (.NET) to the UxPlay AirPlay
  * receiver core (GPLv3) + GStreamer rendering pipeline.
  *
  * All functions are thread-safe to call from the .NET UI thread unless
@@ -28,7 +28,7 @@ typedef void (*ap_event_cb)(void *ctx, ap_event_t event, const char *info,
 
 /*
  * Start the AirPlay receiver. server_name is the name shown in the iPhone's
- * Screen Mirroring list (NULL -> "REditor"). Returns 0 on success.
+ * Screen Mirroring list (NULL -> "AirMirror"). Returns 0 on success.
  */
 int  airplay_start(const char *server_name, ap_event_cb cb, void *ctx);
 

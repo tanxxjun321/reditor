@@ -8,9 +8,9 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Styling;
 using Avalonia.Threading;
-using REditor.AirPlay;
+using AirMirror.AirPlay;
 
-namespace REditor;
+namespace AirMirror;
 
 public partial class MainWindow : Window {
     private readonly Settings _settings;
@@ -159,7 +159,7 @@ public partial class MainWindow : Window {
     // ---------- iPhone 投屏 ----------
 
     // 顶部状态文字的组成部分
-    private string _statusText = "REditor";
+    private string _statusText = "AirMirror";
     private string _resolutionText = "";
     private string _statsText = "";
     private string? _connectedDevice;   // 当前连接的设备名,用于断开通知
@@ -268,7 +268,7 @@ public partial class MainWindow : Window {
     }
 
     private static readonly string AirPlayLogPath =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "reditor_airplay.log");
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "airmirror_airplay.log");
     private static readonly object AirPlayLogLock = new();
 
     private static void LogAirPlayEvent(AirPlayService.EventArgs e) {
@@ -331,7 +331,7 @@ public partial class MainWindow : Window {
                 _mirroring = false;
                 _chromeTimer.Stop();
                 ShowChrome();
-                SetStatus("REditor");
+                SetStatus("AirMirror");
                 MirrorToggleButton.Content = "开始接收";
                 _resolutionText = "";
                 ResetStats();

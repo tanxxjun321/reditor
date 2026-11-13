@@ -1,4 +1,4 @@
-# PRD — AirPlay 专业投屏软件
+# PRD — AirPlay 专业投屏软件(AirMirror)
 
 > 状态：进行中 · 创建于 2026-11-11
 > 前身：REditor(Avalonia 跨平台编辑器 demo,其中「投屏」是唯一保留功能)
@@ -16,8 +16,10 @@
 - 协议:**仅 AirPlay**(基于 UxPlay,不做 Miracast/DLNA/scrcpy)
 - 高级功能范围:**只做窗口与体验增强**;不做录制、截图、多设备同屏
 
-**命名:待定。** 现名 "REditor" 是文本编辑器遗留,确定新名后统一替换
-窗口标题、iPhone 镜像列表默认设备名、.app 文件名。
+**命名:已定稿 "AirMirror"(2026-11-13)。** 已统一替换窗口标题、iPhone
+镜像列表默认设备名、.app 文件名、bundle id(com.airmirror.app)、项目
+目录与命名空间;旧 `~/Library/Application Support/REditor` 配置目录在
+首次启动时自动迁移。
 
 ## 2. 功能清单
 
@@ -41,7 +43,7 @@
    防止同 WiFi 下误投/恶意投屏
 6. **实时统计** — 分辨率、帧率、码率指示(从 GStreamer 管线 query)
 7. **设置持久化** — 设备名、增益、主题等存
-   `~/Library/Application Support/REditor/settings.json`,重启保留
+   `~/Library/Application Support/AirMirror/settings.json`,重启保留
 
 ### 2.3 引导与反馈
 
@@ -88,8 +90,34 @@
 | **P1 重构清理** | 删 demo、单页 UI 重构、空态引导页、设置弹出面板、设置持久化 | ✅ |
 | **P2 窗口增强** | 全屏、置顶、无边框模式 | ✅ |
 | **P2.5 UI 改版** | 窗口即画面、悬浮工具栏、自动隐藏(2026-11-12) | ✅ |
-| **P3 安全与统计** | 密码保护、帧率/码率统计、连接通知、本地网络权限引导 | ⏸ 暂缓 |
-| **P4 发布** | 命名定稿、签名公证、打包裁剪为 macOS、GPL 确认 | ⏸ 暂缓 |
+| **P3 安全与统计** | 密码保护、帧率/码率统计、连接通知、本地网络权限引导 | ✅ (2026-11-13) |
+| **P4 发布** | 命名定稿(AirMirror)、签名公证脚本、打包裁剪为 macOS、GPL 确认 | ✅ (2026-11-13) |
+
+### P3 实现说明(2026-11-13)
+
+- **密码保护**:`airplay_set_password()` 桥接 UxPlay 原生 RFC2617 摘要认证
+  (raop `passwd` 回调),iPhone 连接时弹密码框;对新连接生效,接收中修改
+  无需重启。密码明文存于 settings.json(本地接入密码,可接受)。
+- **实时统计**:原生侧在镜像包回调里累计帧数/字节数,C# 每秒差分得到
+  fps/Mbps,显示在顶部状态栏(设备名 · 分辨率 · 帧率 · 码率)。
+- **连接通知**:`airplay_show_notification()` 走 UNUserNotificationCenter,
+  首次使用申请授权;需要 .app 包内运行才能送达,失败降级为日志。
+  设置面板可关闭。
+- **本地网络权限引导**:空态页新增「打开本地网络设置」按钮,直达
+  系统设置 → 隐私与安全性 → 本地网络。
+
+### P4 实现说明(2026-11-13)
+
+- **命名**:定稿 AirMirror;目录/工程/命名空间/bundle id 全部替换,
+  旧设置目录与旧默认设备名自动迁移,诊断环境变量改 `AIRMIRROR_*`。
+- **签名公证**:`sign.sh` + `entitlements.plist`(allow-jit +
+  disable-library-validation),覆盖包内所有 dylib 的逐层重签、
+  notarytool 公证、stapler 贴票;用户有付费开发者账号,填好
+  notarytool 凭据后 `./sign.sh` 一键完成(尚未实际执行)。
+- **打包裁剪**:build.sh 删除 Windows 目标,仅保留 mac/mac-x64;
+  Makefile 同步。
+- **GPL 合规**:确认接受 GPLv3 开源,已添加 LICENSE(GPLv3 全文),
+  README 注明许可与 UxPlay 出处。
 
 ## 4. 非目标(明确不做)
 

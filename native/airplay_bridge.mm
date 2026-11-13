@@ -1,5 +1,5 @@
 /*
- * airplay_bridge.mm — AirPlay receiver bridge for REditor.
+ * airplay_bridge.mm — AirPlay receiver bridge for AirMirror.
  *
  * Wraps the UxPlay core (native/uxplay/lib, GPLv3/LGPL-2.1+) and its
  * GStreamer renderers (native/uxplay/renderers, GPLv3) behind a small C API.
@@ -23,6 +23,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <sys/stat.h>
 #include <thread>
 #include <vector>
 
@@ -104,8 +105,14 @@ static void bridge_log_callback(void *cls, int level, const char *msg) {
 
 static std::string config_dir() {
     const char *home = getenv("HOME");
-    std::string dir = (home ? home : ".");
-    dir += "/Library/Application Support/REditor";
+    std::string base = (home ? home : ".");
+    std::string dir = base + "/Library/Application Support/AirMirror";
+    /* one-time migration from the pre-rename REditor directory: preserves
+     * the stable AirPlay device id and pairing key */
+    std::string old = base + "/Library/Application Support/REditor";
+    struct stat st;
+    if (stat(dir.c_str(), &st) != 0 && stat(old.c_str(), &st) == 0)
+        rename(old.c_str(), dir.c_str());
     return dir;
 }
 
@@ -217,7 +224,7 @@ static const AudioObjectPropertyAddress kDefaultOutputAddr = {
  *   rebuild is kept anyway as the generic reset mechanism).
  * Cost: CPU decode (a few % on Apple Silicon at 1184x2560) and a system-
  * memory upload to the GL sink instead of a zero-copy path. The decoder is
- * overridable via REDITOR_DECODER for A/B comparison. */
+ * overridable via AIRMIRROR_DECODER for A/B comparison. */
 
 /* video packets buffered while the pipeline is rebuilt (rotation) */
 struct PendingPacket {
@@ -270,17 +277,17 @@ static void start_video_renderer() {
             g_cover_view.hidden = NO;
         });
     }
-    /* REDITOR_SINK overrides the sink for A/B diagnosis:
+    /* AIRMIRROR_SINK overrides the sink for A/B diagnosis:
      * glimagesink (default, zero-copy GL), caopengllayersink (GL RGBA),
      * osxvideosink (CPU path), fakesink (no rendering, isolates decode) */
-    const char *sink = getenv("REDITOR_SINK");
+    const char *sink = getenv("AIRMIRROR_SINK");
     if (!sink || !*sink) sink = "glimagesink";
     /* qos=false + max-lateness=-1: never drop a frame for being late. Late
      * frames present as fast as they decode, so the mirror fast-forwards
      * through a sender backlog and re-syncs by itself; sink QoS is unusable
      * anyway on this stream (IPPP, no B-frames — decoder-side dropping
      * corrupts the reference chain: observed 49 fps in, 2.5 fps out). */
-    const char *decoder = getenv("REDITOR_DECODER");
+    const char *decoder = getenv("AIRMIRROR_DECODER");
     if (!decoder || !*decoder) decoder = "avdec_h264 max-threads=1";
     /* avdec outputs system memory, so the converter is always videoconvert
      * (a no-op passthrough for NV12; glcolorconvert only links GLMemory) */
@@ -707,7 +714,7 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
 
     g_event_cb = cb;
     g_event_ctx = ctx;
-    g_server_name = (server_name && *server_name) ? server_name : "REditor";
+    g_server_name = (server_name && *server_name) ? server_name : "AirMirror";
 
     if (!gstreamer_init()) {
         emit(AP_EV_ERROR, "GStreamer initialization failed (missing plugins?)");
@@ -716,7 +723,7 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
     }
 
     g_logger = logger_init();
-    logger_set_level(g_logger, LOGGER_DEBUG);   /* REditor: verbose while diagnosing */
+    logger_set_level(g_logger, LOGGER_DEBUG);   /* AirMirror: verbose while diagnosing */
     logger_set_callback(g_logger, bridge_log_callback, nullptr);
 
     audio_renderer_init(g_logger, "osxaudiosink", &g_audio_sync, &g_video_sync, "");
@@ -1043,7 +1050,7 @@ extern "C" void airplay_show_notification(const char *title, const char *body) {
         }
         if (!g_notif_available) return;
         @try {
-            NSString *t = (title && *title) ? @(title) : @"REditor";
+            NSString *t = (title && *title) ? @(title) : @"AirMirror";
             NSString *b = (body && *body)   ? @(body)  : @"";
             UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
             if (!g_notif_auth_requested) {

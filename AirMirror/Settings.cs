@@ -3,15 +3,16 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace REditor;
+namespace AirMirror;
 
 /// <summary>
-/// 应用设置,持久化到 ~/Library/Application Support/REditor/settings.json。
-/// 读取失败(文件缺失/损坏)时回落到默认值;写失败不影响功能。
+/// 应用设置,持久化到 ~/Library/Application Support/AirMirror/settings.json。
+/// 首次启动时从旧目录 REditor 迁移。读取失败(文件缺失/损坏)时回落到默认值;
+/// 写失败不影响功能。
 /// </summary>
 public sealed class Settings {
     /// <summary>设备名称:iPhone 屏幕镜像列表中显示的名字。</summary>
-    public string DeviceName { get; set; } = "REditor";
+    public string DeviceName { get; set; } = "AirMirror";
 
     /// <summary>App 内音频增益,1.0 = 跟随手机音量。</summary>
     public double Gain { get; set; } = 1.0;
@@ -29,14 +30,24 @@ public sealed class Settings {
     public bool NotifyOnConnection { get; set; } = true;
 
     private static string DirPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "REditor");
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AirMirror");
     private static string FilePath => Path.Combine(DirPath, "settings.json");
+    private static string LegacyFilePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "REditor", "settings.json");
 
     public static Settings Load() {
         try {
-            if (File.Exists(FilePath)) {
-                return JsonSerializer.Deserialize(File.ReadAllText(FilePath),
-                           SettingsJsonContext.Default.Settings) ?? new Settings();
+            // 改名前的旧设置目录,做一次只读迁移
+            var path = File.Exists(FilePath) ? FilePath
+                     : File.Exists(LegacyFilePath) ? LegacyFilePath
+                     : null;
+            if (path != null) {
+                var s = JsonSerializer.Deserialize(File.ReadAllText(path),
+                            SettingsJsonContext.Default.Settings) ?? new Settings();
+                // 旧默认设备名跟随产品改名(用户显式改过的名字不受影响)
+                if (s.DeviceName == "REditor") s.DeviceName = "AirMirror";
+                return s;
             }
         } catch { /* 损坏则用默认值 */ }
         return new Settings();

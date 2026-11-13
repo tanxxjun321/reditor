@@ -1,7 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 
-namespace REditor.AirPlay;
+namespace AirMirror.AirPlay;
 
 /// <summary>
 /// Thin P/Invoke wrapper over libairplaybridge.dylib (UxPlay core + GStreamer).
@@ -41,7 +41,7 @@ public sealed class AirPlayService : IDisposable {
     }
 
     /// <summary>Start the AirPlay receiver. Throws on failure.</summary>
-    public void Start(string serverName = "REditor") {
+    public void Start(string serverName = "AirMirror") {
         if (IsRunning) return;
         int rc = NativeBridge.airplay_start(serverName, _callback, IntPtr.Zero);
         if (rc != 0) {
