@@ -51,6 +51,11 @@ C# 侧通过 P/Invoke 调用(`AirMirror/AirPlay/`)。
 ./sign.sh            # Developer ID 签名 + 公证 + stapling(前置见脚本注释)
 ```
 
+发布为**自包含单文件**(免装 .NET 运行时)。`native/bundle_deps.sh` 会把
+Homebrew 动态库依赖闭包和 GStreamer 插件收进 `Contents/Frameworks`(引用改写为
+`@rpath`、剥离 Homebrew rpath、补 adhoc 签名),使 App 脱离开发机环境运行;
+装包后自动只用包内插件(防止与系统 GStreamer 混载崩溃)。
+
 `sign.sh` 需要钥匙串中的 Developer ID Application 证书和
 `xcrun notarytool store-credentials` 存入的公证凭据;未签名直接分发时,
 用户需执行 `xattr -dr com.apple.quarantine publish/AirMirror.app` 才能打开。

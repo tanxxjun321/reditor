@@ -8,8 +8,13 @@ PROJECT=AirMirror/AirMirror.csproj
 OUT=publish
 
 publish() { # $1 = RID, $2 = 输出目录名
-    echo "==> 发布 $1 ..."
-    dotnet publish "$PROJECT" -c Release -r "$1" -o "$OUT/$2"
+    echo "==> 发布 $1 (自包含单文件) ..."
+    # 单文件 + 自包含:macOS 15 起 Contents/MacOS 只准放可签名代码,
+    # 散落的 dll/json/pdb 会让 codesign 直接报错;同时免装 .NET 运行时。
+    # 先清输出目录:增量发布曾出现单文件模式下漏拷原生 dylib 的情况
+    rm -rf "$OUT/$2"
+    dotnet publish "$PROJECT" -c Release -r "$1" --self-contained \
+        -p:PublishSingleFile=true -o "$OUT/$2"
 }
 
 make_app_bundle() { # $1 = RID 输出目录, $2 = app 名
@@ -19,6 +24,9 @@ make_app_bundle() { # $1 = RID 输出目录, $2 = app 名
     rm -rf "$OUT/$2.app"
     mkdir -p "$app/MacOS" "$app/Resources"
     cp -R "$src"/. "$app/MacOS/"
+    # 单文件模式下 deps/runtimeconfig 已嵌入 apphost,这些文件只是发布副产物;
+    # 留在 MacOS 里会被 codesign 当作未签名代码拒绝
+    find "$app/MacOS" -type f \( -name "*.json" -o -name "*.pdb" \) -delete
     find "$app/MacOS" -name "*.dSYM" -prune -exec rm -rf {} + 2>/dev/null || true
     cat > "$app/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -38,6 +46,8 @@ make_app_bundle() { # $1 = RID 输出目录, $2 = app 名
 </plist>
 EOF
     chmod +x "$app/MacOS/AirMirror"
+    # 收进 Homebrew 动态库依赖 + GStreamer 插件,脱离开发机环境运行
+    ./native/bundle_deps.sh "$OUT/$2.app"
 }
 
 build_mac() { publish osx-arm64 osx-arm64 && make_app_bundle osx-arm64 AirMirror; }

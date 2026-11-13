@@ -716,6 +716,31 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
     g_event_ctx = ctx;
     g_server_name = (server_name && *server_name) ? server_name : "AirMirror";
 
+    /* GStreamer plugins are dlopen'd at runtime, so otool sees none of them:
+     * release bundles carry their own set in Contents/Frameworks/gstreamer
+     * (see native/bundle_deps.sh) — point GStreamer there. Development runs
+     * (no bundled plugins) fall back to the system/Homebrew installation.
+     * Explicit user-set env vars always win (A/B diagnosis). */
+    @autoreleasepool {
+        NSString *gst = [NSBundle.mainBundle.privateFrameworksPath
+                             stringByAppendingPathComponent:@"gstreamer"];
+        if ([NSFileManager.defaultManager fileExistsAtPath:gst]) {
+            if (!getenv("GST_PLUGIN_PATH"))
+                setenv("GST_PLUGIN_PATH", gst.fileSystemRepresentation, 1);
+            if (!getenv("GST_PLUGIN_SCANNER")) {
+                NSString *scanner = [gst stringByAppendingPathComponent:@"gst-plugin-scanner"];
+                setenv("GST_PLUGIN_SCANNER", scanner.fileSystemRepresentation, 1);
+            }
+            /* 只用包内插件:系统装了 GStreamer 时,默认系统插件路径会把
+             * Homebrew 的插件也扫进来,其绝对路径依赖再拖入第二份
+             * libgstreamer/glib,ObjC 类与 GType 双注册直接崩 */
+            if (!getenv("GST_PLUGIN_SYSTEM_PATH"))
+                setenv("GST_PLUGIN_SYSTEM_PATH", "", 1);
+            if (!getenv("GST_PLUGIN_SYSTEM_PATH_1_0"))
+                setenv("GST_PLUGIN_SYSTEM_PATH_1_0", "", 1);
+        }
+    }
+
     if (!gstreamer_init()) {
         emit(AP_EV_ERROR, "GStreamer initialization failed (missing plugins?)");
         g_running = false;

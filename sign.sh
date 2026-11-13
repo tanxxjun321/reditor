@@ -27,6 +27,14 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
         | awk -F'"' '/Developer ID Application/ {print $2; exit}')
     [[ -n "$SIGN_IDENTITY" ]] || { echo "错误: 钥匙串中找不到 Developer ID Application 证书" >&2; exit 1; }
 fi
+# 直接分发 + 公证只认 Developer ID Application;"Apple Development"(调试)
+# 和 "Apple Distribution"(App Store)提交 notarytool 都会被拒
+case "$SIGN_IDENTITY" in
+    "Developer ID Application:"*) ;;
+    *) echo "错误: 公证要求 \"Developer ID Application\" 证书,当前是 \"$SIGN_IDENTITY\"" >&2
+       echo "     创建: Xcode → Settings → Accounts → Manage Certificates → + → Developer ID Application" >&2
+       exit 1 ;;
+esac
 echo "签名证书: $SIGN_IDENTITY"
 echo "公证凭据: $NOTARY_PROFILE"
 
