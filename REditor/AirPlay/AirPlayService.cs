@@ -76,6 +76,22 @@ public sealed class AirPlayService : IDisposable {
     /// <summary>App-side gain multiplier (1.0 = follow the phone's volume).</summary>
     public void SetGain(double gain) => NativeBridge.airplay_set_volume(gain);
 
+    /// <summary>
+    /// Client access password; empty/null disables. Takes effect for new
+    /// connections only — safe to change while a session is running.
+    /// </summary>
+    public void SetPassword(string? password) => NativeBridge.airplay_set_password(password);
+
+    /// <summary>Cumulative mirror-stream counters (frames, payload bytes) since the current client connected.</summary>
+    public (ulong Frames, ulong Bytes) GetStats() {
+        NativeBridge.airplay_get_stats(out ulong frames, out ulong bytes);
+        return (frames, bytes);
+    }
+
+    /// <summary>Post a macOS user notification. Delivery requires running from an .app bundle.</summary>
+    public void ShowNotification(string title, string body) =>
+        NativeBridge.airplay_show_notification(title, body);
+
     /// <summary>Hide the cursor until the mouse moves (macOS NSCursor). Call when chrome auto-hides.</summary>
     public void HideCursorUntilMouseMoves() => NativeBridge.airplay_hide_cursor_until_move();
 
@@ -117,6 +133,18 @@ public sealed class AirPlayService : IDisposable {
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void airplay_set_volume(double gain);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void airplay_set_password(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string? password);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void airplay_get_stats(out ulong frames, out ulong bytes);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void airplay_show_notification(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string title,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string body);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         internal static extern void airplay_hide_cursor_until_move();

@@ -14,6 +14,7 @@
  */
 
 #import <Cocoa/Cocoa.h>
+#import <UserNotifications/UserNotifications.h>
 #include <CoreAudio/CoreAudio.h>
 
 #include <atomic>
@@ -80,6 +81,14 @@ static std::string        g_server_name;
 
 static unsigned char      g_audio_ct = 0;         /* active stream's codec      */
 static std::atomic<bool>  g_audio_active{false};
+
+/* client access password (digest auth); protected for UI-thread writes     */
+static std::mutex         g_password_mtx;
+static std::string        g_password;
+
+/* cumulative mirror-stream counters, reset at start and per client         */
+static std::atomic<uint64_t> g_stat_frames{0};
+static std::atomic<uint64_t> g_stat_bytes{0};
 
 /* ------------------------------------------------------------- utilities */
 
@@ -382,6 +391,8 @@ extern "C" {
 static void cb_conn_init(void *cls) {
     (void) cls;
     g_open_connections++;
+    g_stat_frames = 0;
+    g_stat_bytes = 0;
     /* start each session at full volume: the client drives it down to its
      * own preference right after connecting. Without this, the -30 dB
      * fade-out an iPhone sends on disconnect would persist silently. */
@@ -476,6 +487,10 @@ static int cb_video_set_codec_and_size(void *cls, video_codec_t codec,
 static void cb_video_process(void *cls, raop_ntp_t *ntp, video_decode_struct *data) {
     (void) cls; (void) ntp;
     if (!g_running) return;
+    /* one packet == one frame on the mirror channel (may hold several NALs);
+     * these counters are the actual stream fps/bitrate the UI reports */
+    g_stat_frames++;
+    g_stat_bytes += data->data_len;
     uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
     map_pts(&data->ntp_time_remote, local);
     g_last_activity_ns.store(get_local_time());
@@ -577,8 +592,21 @@ static bool cb_check_register(void *cls, const char *pk_str) {
 
 static const char *cb_passwd(void *cls, int *len) {
     (void) cls;
-    *len = 0;                    /* no access control */
-    return nullptr;
+    /* RFC2617 digest auth against the configured password. The returned
+     * pointer must stay valid after return — hand out a thread-local copy
+     * (this callback runs on a raop handler thread while the UI thread may
+     * be writing g_password). len = 0 disables access control. */
+    static thread_local std::string copy;
+    {
+        std::lock_guard<std::mutex> lk(g_password_mtx);
+        copy = g_password;
+    }
+    if (copy.empty()) {
+        *len = 0;
+        return nullptr;
+    }
+    *len = (int) copy.size();
+    return copy.c_str();
 }
 
 static void cb_display_pin(void *cls, char *pin) {
@@ -825,6 +853,8 @@ extern "C" void airplay_stop(void) {
     g_open_connections = 0;
     g_clock_offset = 0;
     g_last_activity_ns = 0;
+    g_stat_frames = 0;
+    g_stat_bytes = 0;
     g_video_rebuilding = false;
     g_rebuild_scheduled = false;
     g_reset_clock_on_rebuild = false;
@@ -976,4 +1006,67 @@ extern "C" void airplay_hide_cursor_until_move(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [NSCursor setHiddenUntilMouseMoves:YES];
     });
+}
+
+/* ----------------------------------------------------------- password */
+
+extern "C" void airplay_set_password(const char *password) {
+    std::lock_guard<std::mutex> lk(g_password_mtx);
+    g_password = password ? password : "";
+}
+
+/* -------------------------------------------------------------- stats */
+
+extern "C" void airplay_get_stats(unsigned long long *frames,
+                                  unsigned long long *bytes) {
+    if (frames) *frames = g_stat_frames.load();
+    if (bytes)  *bytes  = g_stat_bytes.load();
+}
+
+/* ------------------------------------------------------- notification */
+
+/* UNUserNotificationCenter.currentNotificationCenter THROWS
+ * (NSInternalInconsistencyException "bundleProxyForCurrentProcess is nil")
+ * when the process isn't launched from an .app bundle — e.g. dotnet run in
+ * development. Gate on bundleIdentifier and never touch the API otherwise. */
+static BOOL g_notif_available = NO;
+static BOOL g_notif_checked = NO;
+static BOOL g_notif_auth_requested = NO;
+
+extern "C" void airplay_show_notification(const char *title, const char *body) {
+    @autoreleasepool {
+        if (!g_notif_checked) {
+            g_notif_checked = YES;
+            g_notif_available = NSBundle.mainBundle.bundleIdentifier != nil;
+            if (!g_notif_available)
+                emit(AP_EV_LOG, "notifications unavailable outside an .app bundle, skipping");
+        }
+        if (!g_notif_available) return;
+        @try {
+            NSString *t = (title && *title) ? @(title) : @"REditor";
+            NSString *b = (body && *body)   ? @(body)  : @"";
+            UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+            if (!g_notif_auth_requested) {
+                g_notif_auth_requested = YES;
+                [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
+                                      completionHandler:^(BOOL granted, NSError *) {
+                    if (!granted)
+                        emit(AP_EV_LOG, "notification permission denied "
+                                        "(System Settings > Notifications)");
+                }];
+            }
+            UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+            content.title = t;
+            content.body = b;
+            UNNotificationRequest *req =
+                [UNNotificationRequest requestWithIdentifier:[NSUUID UUID].UUIDString
+                                                     content:content trigger:nil];
+            [center addNotificationRequest:req withCompletionHandler:^(NSError *err) {
+                if (err)
+                    emit(AP_EV_LOG, "notification failed to post");
+            }];
+        } @catch (NSException *) {
+            emit(AP_EV_LOG, "notification failed (UserNotifications exception)");
+        }
+    }
 }

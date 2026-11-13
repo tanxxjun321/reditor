@@ -81,7 +81,8 @@ target_include_directories(airplaybridge PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${GST_INCLUDE_DIRS}
 )
-target_link_libraries(airplaybridge PRIVATE uxplaycore "-framework Cocoa" "-framework CoreAudio")
+target_link_libraries(airplaybridge PRIVATE uxplaycore
+  "-framework Cocoa" "-framework CoreAudio" "-framework UserNotifications")
 set_target_properties(airplaybridge PROPERTIES
   OUTPUT_NAME "airplaybridge"
   PREFIX "lib"

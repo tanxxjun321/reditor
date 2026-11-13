@@ -62,6 +62,29 @@ void  airplay_window_chrome_fixup(void *nswindow);
 void  airplay_set_volume(double volume);
 
 /*
+ * Client access password (UxPlay's native RFC2617 digest auth): when set,
+ * iOS prompts for it before mirroring starts. Empty/NULL disables. May be
+ * called any time — it takes effect for NEW connections, the current
+ * session is unaffected (no restart needed).
+ */
+void  airplay_set_password(const char *password);
+
+/*
+ * Cumulative mirror-stream counters: frames = video packets fed to the
+ * decoder, bytes = their payload size. Reset at airplay_start and on every
+ * new client connection. Poll ~1/s and diff for fps / bitrate.
+ */
+void  airplay_get_stats(unsigned long long *frames, unsigned long long *bytes);
+
+/*
+ * Post a macOS user notification (UNUserNotificationCenter). Authorization
+ * is requested lazily on first use; a denial or failure is reported via
+ * AP_EV_LOG. Outside an .app bundle (dotnet run) the call is a logged no-op
+ * — the UserNotifications API crashes unbundled processes, so it is gated.
+ */
+void  airplay_show_notification(const char *title, const char *body);
+
+/*
  * Hide the mouse cursor until the user moves it (NSCursor
  * setHiddenUntilMouseMoves:). Used when the overlay chrome auto-hides
  * during mirroring, e.g. in fullscreen. macOS no-op safe to call anytime.

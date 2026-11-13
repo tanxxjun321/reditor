@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
@@ -28,6 +29,8 @@ public partial class MainWindow : Window {
         GainText.Text = $"{(int)(_settings.Gain * 100)}%";
         DeviceNameBox.Text = _settings.DeviceName;
         GuideDeviceNameText.Text = $"3. 选择「{_settings.DeviceName}」";
+        PasswordBox.Text = _settings.Password;
+        NotifySwitch.IsChecked = _settings.NotifyOnConnection;
         ThemeCombo.SelectedIndex = _settings.Theme switch { "Light" => 1, "Dark" => 2, _ => 0 };
         ApplySavedTheme();
         Topmost = _settings.Topmost;
@@ -39,6 +42,7 @@ public partial class MainWindow : Window {
             ExtendClientAreaToDecorationsHint = true;
             ExtendClientAreaTitleBarHeightHint = 28;
         }
+        LocalNetworkButton.IsVisible = _isMacOS;
 
         // 悬浮层自动隐藏计时器:连接中鼠标静止一段时间后淡出
         _chromeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.5) };
@@ -46,6 +50,10 @@ public partial class MainWindow : Window {
             _chromeTimer.Stop();
             if (_mirroring && !_flyoutOpen) HideChrome();
         };
+
+        // 实时统计:连接中每秒从原生计数器差分出帧率/码率
+        _statsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _statsTimer.Tick += (_, _) => UpdateStats();
     }
 
     protected override void OnOpened(EventArgs e) {
@@ -153,6 +161,30 @@ public partial class MainWindow : Window {
     // 顶部状态文字的组成部分
     private string _statusText = "REditor";
     private string _resolutionText = "";
+    private string _statsText = "";
+    private string? _connectedDevice;   // 当前连接的设备名,用于断开通知
+
+    // 实时统计(原生累计计数器的差分)
+    private readonly DispatcherTimer _statsTimer;
+    private ulong _lastFrames;
+    private ulong _lastBytes;
+
+    private void UpdateStats() {
+        var (frames, bytes) = _service.GetStats();
+        ulong fps = frames - _lastFrames;              // 计时器周期 1s,差分即 fps
+        ulong bps = (bytes - _lastBytes) * 8;
+        _lastFrames = frames;
+        _lastBytes = bytes;
+        _statsText = $"{fps} fps · {bps / 1_000_000.0:F1} Mbps";
+        RefreshStatus();
+    }
+
+    private void ResetStats() {
+        _statsTimer.Stop();
+        _statsText = "";
+        _lastFrames = 0;
+        _lastBytes = 0;
+    }
 
     private void OnGainChanged(object? sender, RangeBaseValueChangedEventArgs e) {
         double v = e.NewValue;
@@ -180,6 +212,7 @@ public partial class MainWindow : Window {
         }
         try {
             service.Start(_settings.DeviceName);
+            service.SetPassword(_settings.Password);   // 对新连接生效,无需重启
         } catch (Exception ex) {
             SetStatus($"启动失败:{ex.Message}");
         }
@@ -192,6 +225,11 @@ public partial class MainWindow : Window {
         _settings.Theme = ThemeCombo.SelectedIndex switch { 1 => "Light", 2 => "Dark", _ => null };
         ApplySavedTheme();
 
+        // 连接密码与通知:对新连接生效,接收中修改无需重启
+        _settings.Password = PasswordBox.Text?.Trim() ?? "";
+        if (_service.IsRunning) _service.SetPassword(_settings.Password);
+        _settings.NotifyOnConnection = NotifySwitch.IsChecked ?? true;
+
         // 设备名称
         if (!string.IsNullOrEmpty(name) && name != _settings.DeviceName) {
             _settings.DeviceName = name;
@@ -203,6 +241,7 @@ public partial class MainWindow : Window {
                 service.Stop();
                 try {
                     service.Start(name);
+                    service.SetPassword(_settings.Password);
                 } catch (Exception ex) {
                     SetStatus($"启动失败:{ex.Message}");
                 }
@@ -215,10 +254,12 @@ public partial class MainWindow : Window {
 
     private void SetStatus(string text) => StatusText.Text = _statusText = text;
 
-    private void RefreshStatus() =>
-        StatusText.Text = string.IsNullOrEmpty(_resolutionText)
-            ? _statusText
-            : $"{_statusText} · {_resolutionText}";
+    private void RefreshStatus() {
+        var text = _statusText;
+        if (!string.IsNullOrEmpty(_resolutionText)) text += $" · {_resolutionText}";
+        if (!string.IsNullOrEmpty(_statsText)) text += $" · {_statsText}";
+        StatusText.Text = text;
+    }
 
     private void OnAirPlayEvent(object? sender, AirPlayService.EventArgs e) {
         // 原生回调可能来自任意线程;先落盘诊断日志,再回 UI 线程
@@ -256,9 +297,15 @@ public partial class MainWindow : Window {
                 break;
             case AirPlayService.EventType.Connected:
                 _mirroring = true;
+                _connectedDevice = e.Info;
                 SetStatus($"已连接:{e.Info}");
                 UpdateEmptyState(false, "");
                 RefreshChromeVisibility();
+                _lastFrames = 0;
+                _lastBytes = 0;
+                _statsTimer.Start();
+                if (_settings.NotifyOnConnection)
+                    _service.ShowNotification("设备已连接", $"{e.Info} 开始镜像");
                 break;
             case AirPlayService.EventType.Disconnected:
                 _mirroring = false;
@@ -266,8 +313,12 @@ public partial class MainWindow : Window {
                 ShowChrome();
                 SetStatus("等待 iPhone 连接…");
                 _resolutionText = "";
+                ResetStats();
                 RefreshStatus();
                 UpdateEmptyState(true, "正在等待 iPhone 连接…");
+                if (_settings.NotifyOnConnection)
+                    _service.ShowNotification("设备已断开", $"{_connectedDevice ?? "设备"} 结束镜像");
+                _connectedDevice = null;
                 break;
             case AirPlayService.EventType.VideoSize:
                 _resolutionText = $"{e.Width} × {e.Height}";
@@ -283,6 +334,7 @@ public partial class MainWindow : Window {
                 SetStatus("REditor");
                 MirrorToggleButton.Content = "开始接收";
                 _resolutionText = "";
+                ResetStats();
                 UpdateEmptyState(true, "尚未开始接收");
                 break;
         }
@@ -358,5 +410,18 @@ public partial class MainWindow : Window {
         if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) {
             BeginMoveDrag(e);
         }
+    }
+
+    // ---------- 本地网络权限 ----------
+
+    private void OnOpenLocalNetworkSettings(object? sender, RoutedEventArgs e) {
+        // 直接跳到 系统设置 → 隐私与安全性 → 本地网络 的授权列表
+        try {
+            Process.Start(new ProcessStartInfo {
+                FileName = "open",
+                Arguments = "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork",
+                UseShellExecute = false,
+            });
+        } catch { /* 打开失败时引导文案仍在 */ }
     }
 }

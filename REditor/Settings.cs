@@ -22,6 +22,12 @@ public sealed class Settings {
     /// <summary>"Dark" / "Light" / null = 跟随系统。</summary>
     public string? Theme { get; set; }
 
+    /// <summary>连接密码(UxPlay 原生摘要认证);空字符串 = 不需要密码。</summary>
+    public string Password { get; set; } = "";
+
+    /// <summary>设备接入/断开时发送 macOS 通知。</summary>
+    public bool NotifyOnConnection { get; set; } = true;
+
     private static string DirPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "REditor");
     private static string FilePath => Path.Combine(DirPath, "settings.json");

@@ -17,8 +17,8 @@
     <Grid x:Name="RootArea" Background="Transparent"
           PointerPressed="OnBackgroundPointerPressed">
 
-        <!-- 空态引导:未连接时显示 -->
-        <StackPanel x:Name="EmptyState" Spacing="14" IsHitTestVisible="False"
+        <!-- 空态引导:未连接时显示(按钮需命中测试,点击经 RootArea 冒泡,不影响双击全屏) -->
+        <StackPanel x:Name="EmptyState" Spacing="14"
                     HorizontalAlignment="Center" VerticalAlignment="Center">
             <PathIcon Data="{DynamicResource IconCast}" Width="44" Height="44"
                       Foreground="#40FFFFFF" HorizontalAlignment="Center"/>
@@ -33,9 +33,15 @@
                 <TextBlock x:Name="GuideDeviceNameText" Text="3. 选择「REditor」"
                            FontSize="12" Foreground="#99FFFFFF"/>
             </StackPanel>
-            <TextBlock FontSize="11" Foreground="#66FFFFFF"
-                       TextWrapping="Wrap" TextAlignment="Center" MaxWidth="360"
-                       Text="搜不到设备时,请检查 系统设置 → 隐私与安全性 → 本地网络 中是否已允许本应用"/>
+            <StackPanel Spacing="6" HorizontalAlignment="Center">
+                <TextBlock FontSize="11" Foreground="#66FFFFFF"
+                           TextWrapping="Wrap" TextAlignment="Center" MaxWidth="360"
+                           Text="搜不到设备时,请检查 系统设置 → 隐私与安全性 → 本地网络 中是否已允许本应用"/>
+                <Button x:Name="LocalNetworkButton" Classes="secondary" FontSize="11"
+                        Padding="12,4" HorizontalAlignment="Center"
+                        Content="打开本地网络设置"
+                        Click="OnOpenLocalNetworkSettings"/>
+            </StackPanel>
         </StackPanel>
 
         <!-- 顶部悬浮栏:渐变遮罩 + 状态文字,兼作窗口拖拽区 -->
@@ -107,6 +113,15 @@
                                 <TextBlock Classes="caption" TextWrapping="Wrap"
                                            Text="设备名称(iPhone 屏幕镜像列表中显示的名字,接收中修改会自动重启接收)"/>
                                 <TextBox x:Name="DeviceNameBox"/>
+                                <TextBlock Classes="caption" TextWrapping="Wrap"
+                                           Text="连接密码(留空则不需要密码;对新连接生效,接收中修改无需重启)"/>
+                                <TextBox x:Name="PasswordBox" PlaceholderText="留空表示不需要密码"/>
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <TextBlock Classes="caption" VerticalAlignment="Center"
+                                               Text="设备接入/断开时通知"/>
+                                    <ToggleSwitch x:Name="NotifySwitch" Grid.Column="1"
+                                                  OnContent="" OffContent=""/>
+                                </Grid>
                                 <TextBlock Classes="caption" Text="外观"/>
                                 <ComboBox x:Name="ThemeCombo" HorizontalAlignment="Stretch">
                                     <ComboBoxItem>跟随系统</ComboBoxItem>
