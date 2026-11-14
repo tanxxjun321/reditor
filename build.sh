@@ -46,6 +46,15 @@ make_app_bundle() { # $1 = RID 输出目录, $2 = app 名
 </plist>
 EOF
     chmod +x "$app/MacOS/AirMirror"
+    # NuGet 原生库(SkiaSharp/HarfBuzz/AvaloniaNative)是 x86_64+arm64 双架构,
+    # 按本包目标架构 lipo 瘦身可再省 ~10MB;改动 Mach-O 后补 adhoc 签名
+    local arch="${1/osx-/}" dylib
+    for dylib in "$app/MacOS"/lib*.dylib; do
+        if lipo -info "$dylib" 2>/dev/null | grep -q "are:"; then
+            lipo -thin "$arch" "$dylib" -output "$dylib.thin" && mv "$dylib.thin" "$dylib"
+            codesign --force --sign - "$dylib" 2>/dev/null
+        fi
+    done
     # 收进 Homebrew 动态库依赖 + GStreamer 插件,脱离开发机环境运行
     ./native/bundle_deps.sh "$OUT/$2.app"
 }

@@ -4,6 +4,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 体积优化:裁剪未用代码 + 单文件内压缩(仅 publish 时生效),
+         87MB apphost → ~15MB。构建零 IL2xxx 警告,启动冒烟测试通过 -->
+    <PublishTrimmed>true</PublishTrimmed>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <!-- <PublishAot>true</PublishAot>
     <IsAotCompatible>true</IsAotCompatible> -->
   </PropertyGroup>
