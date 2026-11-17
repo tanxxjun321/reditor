@@ -844,12 +844,16 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
         return -3;
     }
 
-    /* advertised feature set (uxplay defaults, HLS/h265 off) */
+    /* advertised feature set (uxplay defaults, HLS/h265 off)
+     * bit 27 ("supports legacy pairing") OFF: 开启时 iOS 会在发起 TCP 连接前
+     * 静默执行传统配对准备,固定多等 ~5s(UxPlay 上游 issue #176;本机抓包
+     * 实测全接口静默 5.0s 后才发 SYN)。配对的 ecdh 哈希在 raop_handlers.h
+     * 已按上游 d38f869 做成可选(无 /pair-setup 时不做),关闭是安全的。 */
     static const int8_t features[32] = {
         0, 1, 1, 0, 0, 1, 1, 1,   /*  0-7 : mirroring, photos, slideshow ...  */
         0, 1, 1, 1, 1, 1, 1, 1,   /*  8-15: audio, FairPlay, metadata ...     */
         1, 1, 1, 1, 1, 1, 1, 0,   /* 16-23: audio formats, auth ...           */
-        0, 1, 0, 1, 1, 0, 1, 0    /* 24-31: legacy pairing, RAOP support      */
+        0, 1, 0, 0, 1, 0, 1, 0    /* 24-31: bit27 OFF(快连), RAOP support    */
     };
     for (int i = 0; i < 32; i++)
         dnssd_set_airplay_features(g_dnssd, i, features[i]);
