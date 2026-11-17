@@ -42,6 +42,7 @@ set(UXPLAY_SOURCES
   uxplay/lib/playfair/playfair.c
   uxplay/lib/playfair/sap_hash.c
   uxplay/renderers/audio_renderer.c
+  uxplay/renderers/au_output.c
   uxplay/renderers/video_renderer.c
 )
 
@@ -82,7 +83,7 @@ target_include_directories(airplaybridge PRIVATE
   ${GST_INCLUDE_DIRS}
 )
 target_link_libraries(airplaybridge PRIVATE uxplaycore
-  "-framework Cocoa" "-framework CoreAudio" "-framework UserNotifications")
+  "-framework Cocoa" "-framework CoreAudio" "-framework AudioToolbox" "-framework UserNotifications")
 set_target_properties(airplaybridge PROPERTIES
   OUTPUT_NAME "airplaybridge"
   PREFIX "lib"

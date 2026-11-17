@@ -23,7 +23,9 @@
 #include <math.h>
 #include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
+#include <gst/app/gstappsink.h>
 #include "audio_renderer.h"
+#include "au_output.h"
 #define SECOND_IN_NSECS 1000000000ULL
 
 #define NFORMATS 2     /* set to 4 to enable AAC_LD and PCM:  allowed, but  never seen in real-world use */
@@ -44,14 +46,31 @@ static gboolean audio_rtp = FALSE;
 static gdouble volume_level = 1.0;
 
 typedef struct audio_renderer_s {
-    GstElement *appsrc; 
+    GstElement *appsrc;
     GstElement *pipeline;
     GstElement *volume;
+    GstElement *auhal_sink;   /* "auhal" 模式下的 appsink,否则 NULL */
     GstBus *bus;
     unsigned char ct;
 } audio_renderer_t ;
 static audio_renderer_t *renderer_type[NFORMATS];
 static audio_renderer_t *renderer = NULL;
+
+/* auhal 模式:appsink 的 new-sample 回调,把 PCM 写入 AUHAL 环形缓冲 */
+static GstFlowReturn auhal_new_sample_cb(GstElement *sink, gpointer user_data) {
+    (void) user_data;
+    GstSample *sample = NULL;
+    g_signal_emit_by_name(sink, "pull-sample", &sample);
+    if (!sample) return GST_FLOW_OK;
+    GstBuffer *buf = gst_sample_get_buffer(sample);
+    GstMapInfo info;
+    if (buf && gst_buffer_map(buf, &info, GST_MAP_READ)) {
+        au_output_write((const float *) info.data, (int) (info.size / 8));
+        gst_buffer_unmap(buf, &info);
+    }
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
+}
 
 /* GStreamer Caps strings for Airplay-defined audio compression types (ct) */
 
@@ -167,26 +186,34 @@ void audio_renderer_init(logger_t *render_logger, const char* audiosink, const b
         if (!audio_rtp) {
             /* Normal path: local audio output */
             g_string_append (launch, "level ! ");
-            g_string_append (launch, audiosink);
-            switch(i) {
-            case 1:  /*ALAC*/
-                if (*audio_sync) {
-                    g_string_append (launch, " sync=true");
-                    async = TRUE;
-                } else {
-                    g_string_append (launch, " sync=false");
-                    async = FALSE;
+            if (!strcmp(audiosink, "auhal")) {
+                /* 自研 AUHAL 输出(au_output.c),替代 osxaudiosink:
+                 * 后者的 HAL 使用序列在带病 CoreAudio 栈的机器上实测触发
+                 * 死锁直至 SoC watchdog 整机复位。实时流由发送端定速,
+                 * appsink 不需要时钟同步 */
+                g_string_append (launch, "appsink name=auhal_out emit-signals=true sync=false");
+            } else {
+                g_string_append (launch, audiosink);
+                switch(i) {
+                case 1:  /*ALAC*/
+                    if (*audio_sync) {
+                        g_string_append (launch, " sync=true");
+                        async = TRUE;
+                    } else {
+                        g_string_append (launch, " sync=false");
+                        async = FALSE;
+                    }
+                    break;
+                default:
+                    if (*video_sync) {
+                        g_string_append (launch, " sync=true");
+                        vsync = TRUE;
+                    } else {
+                        g_string_append (launch, " sync=false");
+                        vsync = FALSE;
+                    }
+                    break;
                 }
-                break;
-            default:
-                if (*video_sync) {
-                    g_string_append (launch, " sync=true");
-                    vsync = TRUE;
-                } else {
-                    g_string_append (launch, " sync=false");
-                    vsync = FALSE;
-                }
-                break;
             }
         } else {
             /* RTP path: send decoded PCM over RTP */
@@ -208,6 +235,17 @@ void audio_renderer_init(logger_t *render_logger, const char* audiosink, const b
         renderer_type[i]->volume = gst_bin_get_by_name (GST_BIN (renderer_type[i]->pipeline), "volume");
         if (renderer_type[i]->volume) {
             g_object_set(renderer_type[i]->volume, "volume", volume_level, NULL);
+        }
+        renderer_type[i]->auhal_sink = gst_bin_get_by_name (GST_BIN (renderer_type[i]->pipeline), "auhal_out");
+        if (renderer_type[i]->auhal_sink) {
+            /* appsink 输出固定为 F32LE/44100/2,前面的 audioconvert/
+             * audioresample 负责适配;new-sample 回调里写入 AUHAL 环形缓冲 */
+            GstCaps *acaps = gst_caps_from_string(
+                "audio/x-raw,format=F32LE,rate=44100,channels=2,layout=interleaved");
+            gst_app_sink_set_caps(GST_APP_SINK(renderer_type[i]->auhal_sink), acaps);
+            gst_caps_unref(acaps);
+            g_signal_connect(renderer_type[i]->auhal_sink, "new-sample",
+                             G_CALLBACK(auhal_new_sample_cb), NULL);
         }
         switch (i) {
         case 0:
@@ -244,6 +282,7 @@ void audio_renderer_init(logger_t *render_logger, const char* audiosink, const b
 
 void audio_renderer_stop() {
     if (renderer) {
+        if (renderer->auhal_sink) au_output_stop();
         gst_app_src_end_of_stream(GST_APP_SRC(renderer->appsrc));
         gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
         renderer = NULL;
@@ -291,18 +330,22 @@ void  audio_renderer_start(unsigned char *ct) {
     get_renderer_type(ct, &id);
     if (id >= 0 && renderer) {
         if(*ct != renderer->ct) {
+            if (renderer->auhal_sink) au_output_stop();
             gst_app_src_end_of_stream(GST_APP_SRC(renderer->appsrc));
             gst_element_set_state (renderer->pipeline, GST_STATE_NULL);
             logger_log(logger, LOGGER_INFO, "changed audio connection, format %s", format[id]);
             renderer = renderer_type[id];
             gst_element_set_state (renderer->pipeline, GST_STATE_PLAYING);
             gst_audio_pipeline_base_time = gst_element_get_base_time(renderer->appsrc);
+            if (renderer->auhal_sink) au_output_start();
         }
     } else if (id >= 0) {
         logger_log(logger, LOGGER_INFO, "start audio connection, format %s", format[id]);
         renderer = renderer_type[id];
         gst_element_set_state (renderer->pipeline, GST_STATE_PLAYING);
         gst_audio_pipeline_base_time = gst_element_get_base_time(renderer->appsrc);
+        if (renderer->auhal_sink && au_output_start() != 0)
+            logger_log(logger, LOGGER_ERR, "auhal: AUHAL output start failed");
     } else {
         logger_log(logger, LOGGER_ERR, "unknown audio compression type ct = %d", *ct);
     }
@@ -399,12 +442,17 @@ void audio_renderer_destroy() {
         renderer_type[i]->bus = NULL;
         gst_object_unref (renderer_type[i]->volume);
         renderer_type[i]->volume = NULL;
+        if (renderer_type[i]->auhal_sink) {
+            gst_object_unref (renderer_type[i]->auhal_sink);
+            renderer_type[i]->auhal_sink = NULL;
+        }
         gst_object_unref (renderer_type[i]->appsrc);
         renderer_type[i]->appsrc = NULL;
         gst_object_unref (renderer_type[i]->pipeline);
         renderer_type[i]->pipeline = NULL;
         free(renderer_type[i]);
     }
+    au_output_destroy();
 }
 
 static gboolean gstreamer_audio_pipeline_bus_callback(GstBus *bus, GstMessage *message, void *loop) {

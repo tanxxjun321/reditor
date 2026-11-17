@@ -82,6 +82,7 @@ static std::string        g_server_name;
 
 static unsigned char      g_audio_ct = 0;         /* active stream's codec      */
 static std::atomic<bool>  g_audio_active{false};
+static std::atomic<unsigned> g_audio_restart_src{0};  /* 去抖:有pending的重启任务 */
 
 /* client access password (digest auth); protected for UI-thread writes     */
 static std::mutex         g_password_mtx;
@@ -187,18 +188,53 @@ static void map_pts(uint64_t *remote, uint64_t local) {
 
 /* ------------------------------------------------ default output tracking */
 
+/* 音频管线控制全部收敛到 GLib 线程串行执行。
+ *
+ * 背景:CoreAudio 的 AudioOutputUnitStart/Stop 被不同线程并发调用会死锁
+ * CoreAudio HAL(macOS 13+,Apple Silicon 专属;Qt QTBUG-111567、JUCE 均有
+ * 报告)。死锁蔓延进内核音频驱动工作队列后无法回收,会触发 SoC watchdog
+ * 整机复位——在病态音频配置(如无输出流的多输出设备 + DP 显示器音频)的
+ * 机器上实测发生。此前 cb_audio_get_format 跑在 raop 网络线程、
+ * default_output_changed_cb 跑在 CoreAudio 通知线程,两者可并发
+ * stop/start 同一管线,正是该死锁的调用形态。 */
+static gboolean audio_start_cb(gpointer) {
+    if (g_running) {
+        audio_renderer_start(&g_audio_ct);
+        g_audio_active = true;
+        apply_volume();
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean audio_restart_cb(gpointer) {
+    g_audio_restart_src = 0;
+    if (g_running && g_audio_active) {
+        emit(AP_EV_LOG, "default audio output changed; restarting audio renderer");
+        audio_renderer_stop();
+        audio_renderer_start(&g_audio_ct);
+        apply_volume();
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean audio_stop_cb(gpointer) {
+    audio_renderer_stop();
+    g_audio_active = false;
+    return G_SOURCE_REMOVE;
+}
+
 /* osxaudiosink binds the output device when the pipeline opens and does NOT
  * follow macOS default-output changes (e.g. plugging in headphones) while
  * playing. Listen for the change ourselves and restart the audio renderer,
- * which reopens the sink on the current default device. */
+ * which reopens the sink on the current default device.
+ * 本回调跑在 CoreAudio 线程,绝不可在此直接操作管线;设备抖动(插拔、
+ * DP 显示器音频协商)常一次来一串通知,去抖 500ms 合并为一次重启。 */
 static OSStatus default_output_changed_cb(AudioObjectID, UInt32,
                                           const AudioObjectPropertyAddress *, void *) {
-    if (g_running && g_audio_active && g_audio_ct) {
-        unsigned char ct = g_audio_ct;
-        emit(AP_EV_LOG, "default audio output changed; restarting audio renderer");
-        audio_renderer_stop();
-        audio_renderer_start(&ct);
-        apply_volume();
+    if (g_running && g_audio_active && g_loop) {
+        unsigned prev = g_audio_restart_src.exchange(1);
+        if (prev) return noErr;   /* 已有一个待执行的重启,本次通知被合并 */
+        g_timeout_add(500, audio_restart_cb, nullptr);
     }
     return noErr;
 }
@@ -412,8 +448,9 @@ static void cb_conn_destroy(void *cls) {
     if (g_open_connections > 0) g_open_connections--;
     if (g_open_connections == 0) {
         g_clock_offset = 0;
-        audio_renderer_stop();
-        g_audio_active = false;
+        /* 同 audio_start_cb:收敛到 GLib 线程执行,见上方注释 */
+        if (g_loop) g_idle_add(audio_stop_cb, nullptr);
+        else { audio_renderer_stop(); g_audio_active = false; }
         emit(AP_EV_DISCONNECTED);
     }
 }
@@ -571,6 +608,22 @@ static void cb_audio_get_format(void *cls, unsigned char *ct, unsigned short *sp
                                 bool *usingScreen, bool *isMedia, uint64_t *audioFormat) {
     (void) cls; (void) spf; (void) usingScreen; (void) isMedia; (void) audioFormat;
     g_audio_ct = *ct;
+    /* AIRMIRROR_AUDIO=off: 不起音频管线,用于在问题机器上二分定位
+     * (音频会话照常建立,只是不解码不播放) */
+    static const bool audio_off = [] {
+        const char *e = getenv("AIRMIRROR_AUDIO");
+        return e && !strcmp(e, "off");
+    }();
+    if (audio_off) {
+        emit(AP_EV_LOG, "audio renderer disabled (AIRMIRROR_AUDIO=off)");
+        return;
+    }
+    /* 收敛到 GLib 线程启动(见 default_output_changed_cb 上方的注释):
+     * 本回调跑在 raop 网络线程,不能直接碰音频管线 */
+    if (g_loop) {
+        g_idle_add(audio_start_cb, nullptr);
+        return;
+    }
     audio_renderer_start(ct);
     g_audio_active = true;
     /* re-assert volume on the (re)started pipeline: audio_renderer_set_volume
@@ -655,7 +708,17 @@ static void loop_thread_fn() {
 
         if (g_running) {
             /* video pipeline errored (uxplay's bus watch quits the loop):
-             * rebuild it and keep serving */
+             * rebuild it and keep serving. 退避:若重建后管线又立刻报错,
+             * 全速重建会风暴式消耗线程/fd/GL 上下文,在内核或驱动状态不佳的
+             * 机器上足以拖垮整机(实测:带病音频栈的 M4 上 SoC watchdog 复位)。
+             * 最多每秒一次,直到管线稳定运行超过 10s 才重置。 */
+            static int64_t last_rebuild_ns = 0;
+            int64_t now = get_local_time();
+            if (last_rebuild_ns && now - last_rebuild_ns < 10 * 1000000000LL /* 10s */) {
+                emit(AP_EV_LOG, "pipeline reset too soon; backing off 1s");
+                g_usleep(G_USEC_PER_SEC);
+            }
+            last_rebuild_ns = get_local_time();
             emit(AP_EV_ERROR, "video pipeline reset");
             rebuild_video_pipeline();
             g_clock_offset = 0;
@@ -751,7 +814,12 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
     logger_set_level(g_logger, LOGGER_DEBUG);   /* AirMirror: verbose while diagnosing */
     logger_set_callback(g_logger, bridge_log_callback, nullptr);
 
-    audio_renderer_init(g_logger, "osxaudiosink", &g_audio_sync, &g_video_sync, "");
+    /* AIRMIRROR_AUDIO_SINK 覆盖音频 sink;默认 "auhal" = 自研 AUHAL 输出
+     * (osxaudiosink 在带病 CoreAudio 栈的机器上会触发整机复位,见
+     * audio_renderer.c 的 auhal 分支注释)。诊断时可设回 osxaudiosink */
+    const char *asink = getenv("AIRMIRROR_AUDIO_SINK");
+    if (!asink || !*asink) asink = "auhal";
+    audio_renderer_init(g_logger, asink, &g_audio_sync, &g_video_sync, "");
     video_renderer_set_caps_callback(on_video_caps, nullptr);
     video_renderer_set_first_frame_callback(on_first_video_frame, nullptr);
     start_video_renderer();
