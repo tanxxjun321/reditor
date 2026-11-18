@@ -28,6 +28,7 @@ make_app_bundle() { # $1 = RID 输出目录, $2 = app 名
     # 留在 MacOS 里会被 codesign 当作未签名代码拒绝
     find "$app/MacOS" -type f \( -name "*.json" -o -name "*.pdb" \) -delete
     find "$app/MacOS" -name "*.dSYM" -prune -exec rm -rf {} + 2>/dev/null || true
+    cp assets/AppIcon.icns "$app/Resources/"
     cat > "$app/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -40,6 +41,7 @@ make_app_bundle() { # $1 = RID 输出目录, $2 = app 名
     <key>CFBundleShortVersionString</key><string>1.0.0</string>
     <key>CFBundleExecutable</key><string>AirMirror</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
