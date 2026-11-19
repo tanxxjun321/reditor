@@ -86,6 +86,9 @@ public partial class MainWindow : Window {
     private readonly DispatcherTimer _chromeTimer;
     private bool _mirroring;   // 有设备连接时为 true,此时悬浮层才会自动隐藏
     private bool _flyoutOpen;  // 设置面板打开时不隐藏悬浮层
+    // 光标是否在窗口内(进入/离开/移动事件维护)。初始 false:窗口出现时若光标本来就在
+    // 副屏,未必触发过 Entered,默认 true 会把副屏上的光标误隐藏
+    private bool _pointerInside;
 
     private void ShowChrome() {
         if (!_borderless) {
@@ -101,8 +104,9 @@ public partial class MainWindow : Window {
         TopBar.IsHitTestVisible = false;
         Toolbar.Opacity = 0;
         Toolbar.IsHitTestVisible = false;
-        // 光标随悬浮层一起隐藏,鼠标一动自动恢复(macOS 原生行为);仅全屏时才隐藏光标
-        if (_isMacOS && WindowState == WindowState.FullScreen)
+        // 光标随悬浮层一起隐藏,鼠标一动自动恢复(macOS 原生行为);
+        // 仅全屏 + 窗口激活 + 光标在窗口内时隐藏,避免切走应用或光标在副屏时误隐藏
+        if (_isMacOS && WindowState == WindowState.FullScreen && IsActive && _pointerInside)
             _service.HideCursorUntilMouseMoves();
     }
 
@@ -150,10 +154,21 @@ public partial class MainWindow : Window {
 
     protected override void OnPointerMoved(PointerEventArgs e) {
         base.OnPointerMoved(e);
+        _pointerInside = true;
         if (!_mirroring) return;
         ShowChrome();
         _chromeTimer.Stop();
         if (ShouldAutoHideChrome) _chromeTimer.Start();
+    }
+
+    protected override void OnPointerEntered(PointerEventArgs e) {
+        base.OnPointerEntered(e);
+        _pointerInside = true;
+    }
+
+    protected override void OnPointerExited(PointerEventArgs e) {
+        base.OnPointerExited(e);
+        _pointerInside = false;
     }
 
     // ---------- iPhone 投屏 ----------
