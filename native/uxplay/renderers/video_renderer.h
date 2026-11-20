@@ -91,6 +91,8 @@ void video_renderer_set_first_frame_callback(video_first_frame_callback_t cb, vo
 /* REditor addition: size-change notification (fires on any caps renegotiation) */
 typedef void (*video_caps_callback_t)(int width, int height, void *ctx);
 void video_renderer_set_caps_callback(video_caps_callback_t cb, void *ctx);
+/* REditor addition: id of the codec-selected active renderer, -1 before selection */
+int video_renderer_active_id(void);
 bool gstreamer_decoder_check(const char *decoder);
 #ifdef __cplusplus
 }

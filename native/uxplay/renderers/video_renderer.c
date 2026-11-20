@@ -1454,11 +1454,24 @@ void video_renderer_seek(float position) {
     }
 }
 
+/* REditor: id of the codec-selected active renderer, -1 before selection.
+ * Callers must not assume id 0: choose_codec destroys the unused renderer,
+ * so after an h265 selection renderer_type[0] is NULL. */
+int video_renderer_active_id(void) {
+    return renderer ? renderer->id : -1;
+}
+
 unsigned int video_renderer_listen(void *loop, int id) {
     g_assert(id >= 0 && id < n_renderers);
-    g_assert (renderer_type[id] && renderer_type[id]->bus);
+    /* REditor: degrade instead of aborting — the unused renderer is destroyed
+     * once a codec is chosen, so a stale id is a logic slip, not a fatal error */
+    if (!renderer_type[id] || !renderer_type[id]->bus) {
+        logger_log(logger, LOGGER_ERR, "video_renderer_listen: renderer %d no longer exists "
+                   "(destroyed after codec selection), watch not installed", id);
+        return 0;
+    }
     return (unsigned int) gst_bus_add_watch(renderer_type[id]->bus,(GstBusFunc)
-                                            gstreamer_video_pipeline_bus_callback, (gpointer) loop);    
+                                            gstreamer_video_pipeline_bus_callback, (gpointer) loop);
 }
 
 bool video_renderer_eos_watch() {

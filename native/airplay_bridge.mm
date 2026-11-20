@@ -272,6 +272,7 @@ static std::mutex           g_video_mtx;          /* guards the four below   */
 static std::vector<PendingPacket> g_pending_video;
 static bool                 g_have_geom = false;
 static video_geometry_t     g_last_geom = {};
+static bool                 g_last_is_h265 = false;   /* 当前会话的 codec,重建时要选回同一 codec 的 renderer */
 static std::atomic<bool>    g_video_rebuilding{false};
 static std::atomic<bool>    g_rebuild_scheduled{false};
 static std::atomic<bool>    g_reset_clock_on_rebuild{false};
@@ -333,7 +334,7 @@ static void start_video_renderer() {
                         /* converter */ "videoconvert",
                         sink, /* sink options */ " qos=false max-lateness=-1",
                         /* fullscreen */ false, g_video_sync,
-                        /* h265 */ false, /* coverart */ false,
+                        /* h265 */ true, /* coverart */ false,
                         /* playbin_version */ 3, /* uri */ nullptr);
     if (g_video_view)
         video_renderer_set_window_handle((uintptr_t) g_video_view);
@@ -384,15 +385,35 @@ static void rebuild_video_pipeline() {
     emit(AP_EV_LOG, "rebuild: starting renderer");
     start_video_renderer();
     video_geometry_t geom;
-    bool have_geom;
+    bool have_geom, is_h265;
     {
         std::lock_guard<std::mutex> lk(g_video_mtx);
         geom = g_last_geom;
         have_geom = g_have_geom;
+        is_h265 = g_last_is_h265;
     }
     if (have_geom)
-        video_renderer_choose_codec_and_size(false, /* h265 */ false, &geom);
+        video_renderer_choose_codec_and_size(false, is_h265, &geom);
     emit(AP_EV_LOG, "rebuild: done");
+}
+
+/* Re-attach the GStreamer bus watch to the ACTIVE renderer. Must run on the
+ * GLib loop thread (all g_video_watch mutations live there).
+ * choose_codec destroys the unused renderer instance, so after an h265
+ * selection renderer id 0 no longer exists — listening on it aborts
+ * (g_assert in video_renderer_listen; crash on iPhone reconnect), and any
+ * need-context / caps messages from the real pipeline would be lost. */
+static void watch_active_renderer() {
+    if (g_video_watch) { g_source_remove(g_video_watch); g_video_watch = 0; }
+    int id = video_renderer_active_id();
+    if (id < 0) id = 0;      /* codec not chosen yet: both renderers exist */
+    if (g_loop)
+        g_video_watch = video_renderer_listen(g_loop, id);
+}
+
+static gboolean watch_active_renderer_cb(gpointer) {
+    watch_active_renderer();
+    return G_SOURCE_REMOVE;
 }
 
 /* Runs on the GLib loop thread: rebuild the mirror pipeline after a reset. */
@@ -409,8 +430,7 @@ static gboolean rebuild_video_cb(gpointer) {
         std::lock_guard<std::mutex> lk(g_video_mtx);
         g_pending_video.clear();   /* buffered pts belong to the old clock */
     }
-    if (g_loop)
-        g_video_watch = video_renderer_listen(g_loop, 0);
+    watch_active_renderer();
     flush_pending_video();         /* also clears g_video_rebuilding */
     return G_SOURCE_REMOVE;
 }
@@ -489,31 +509,41 @@ static int cb_video_set_codec_and_size(void *cls, video_codec_t codec,
     geom.width = width;
     geom.height = height;
     emit(AP_EV_VIDEO_SIZE, nullptr, (int) width, (int) height);
+    bool is_h265 = (codec == VIDEO_CODEC_H265);
     {
         std::lock_guard<std::mutex> lk(g_video_mtx);
-        if (g_have_geom && (geom.width != g_last_geom.width ||
-                            geom.height != g_last_geom.height)) {
-            /* resolution change (rotation): buffer the incoming packets and
-             * rebuild the pipeline around the new size instead of letting the
-             * decoder see a mid-stream SPS change. The next data packet
+        bool codec_changed = g_have_geom && is_h265 != g_last_is_h265;
+        if (codec_changed || (g_have_geom && (geom.width != g_last_geom.width ||
+                                              geom.height != g_last_geom.height))) {
+            /* resolution change (rotation) or codec switch (an h265-only iPhone
+             * reconnecting after an h264 session): buffer the incoming packets
+             * and rebuild the pipeline around the new stream instead of letting
+             * the decoder see a mid-stream SPS change. The next data packet
              * carries the new SPS/PPS + IDR, so the new pipeline starts on a
              * clean keyframe. */
             g_last_geom = geom;
+            g_last_is_h265 = is_h265;
             g_video_rebuilding = true;
             char msg[96];
-            snprintf(msg, sizeof(msg), "video size changed to %dx%d, rebuilding pipeline",
-                     (int) width, (int) height);
+            snprintf(msg, sizeof(msg), "video stream changed to %s %dx%d, rebuilding pipeline",
+                     is_h265 ? "h265" : "h264", (int) width, (int) height);
             emit(AP_EV_LOG, msg);
             request_video_rebuild(false);   /* keep the session clock offset */
             return 0;
         }
         bool already = g_have_geom;
         g_last_geom = geom;
+        g_last_is_h265 = is_h265;
         g_have_geom = true;
         if (already)
             return 0;                       /* same size again (resume etc.) */
     }
-    return video_renderer_choose_codec_and_size(false, codec == VIDEO_CODEC_H265, &geom);
+    int rc = video_renderer_choose_codec_and_size(false, is_h265, &geom);
+    /* choose_codec 会销毁未选中的 renderer;把 bus watch 移到活动 renderer 上,
+     * 否则 h265 会话的 need-context(窗口句柄)/尺寸变化消息全部丢失 */
+    if (rc == 0 && g_loop)
+        g_idle_add(watch_active_renderer_cb, nullptr);
+    return rc;
 }
 
 /* Sender-side backlog (encoder/network can't sustain the load, observed
@@ -844,7 +874,7 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
         return -3;
     }
 
-    /* advertised feature set (uxplay defaults, HLS/h265 off)
+    /* advertised feature set (uxplay defaults, HLS off)
      * bit 27 ("supports legacy pairing") OFF: 开启时 iOS 会在发起 TCP 连接前
      * 静默执行传统配对准备,固定多等 ~5s(UxPlay 上游 issue #176;本机抓包
      * 实测全接口静默 5.0s 后才发 SYN)。配对的 ecdh 哈希在 raop_handlers.h
@@ -857,6 +887,12 @@ extern "C" int airplay_start(const char *server_name, ap_event_cb cb, void *ctx)
     };
     for (int i = 0; i < 32; i++)
         dnssd_set_airplay_features(g_dnssd, i, features[i]);
+    /* bit 42 (SupportsScreenMultiCodec) ON: 允许客户端协商 h265/HEVC。
+     * 部分新 iPhone 只发 h265;此位 OFF 时客户端发来空载荷的 0x01 包,
+     * raop_rtp_mirror 直接判定 unsupported_codec 断开,投屏永远失败
+     * (实测:AirPlay/670.6.2 的 iPhone)。renderer 侧已注册 h265 管线
+     * (h265parse + avdec_h265,gst-libav/videoparsersbad 均已打包)。 */
+    dnssd_set_airplay_features(g_dnssd, 42, 1);
 
     /* RAOP / AirPlay server */
     raop_callbacks_t cbs;
@@ -967,6 +1003,7 @@ extern "C" void airplay_stop(void) {
         std::lock_guard<std::mutex> lk(g_video_mtx);
         g_pending_video.clear();
         g_have_geom = false;
+        g_last_is_h265 = false;
     }
     emit(AP_EV_STOPPED);
 }
