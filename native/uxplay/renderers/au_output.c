@@ -19,7 +19,8 @@
 
 #define AU_RATE 44100
 #define AU_CH   2
-#define RING_FRAMES 44100          /* 0.5s 容量,延迟上界由丢最旧保证 */
+#define RING_FRAMES 22050          /* 0.5s 容量,延迟上界由丢最旧保证(此前误写
+                                    * 44100 = 1.0s,事故后残留滞后翻倍) */
 
 static AudioUnit g_au = NULL;
 static float g_ring[RING_FRAMES * AU_CH];
@@ -86,6 +87,12 @@ int au_output_start(void) {
 
 void au_output_stop(void) {
     if (g_au) AudioOutputUnitStop(g_au);
+    atomic_store(&g_rpos, 0);
+    atomic_store(&g_wpos, 0);
+}
+
+void au_output_reset(void) {
+    /* 与 render_cb 的竞态最坏结果是一瞬间静音/爆音,可接受(见文件头线程模型) */
     atomic_store(&g_rpos, 0);
     atomic_store(&g_wpos, 0);
 }

@@ -435,6 +435,11 @@ void audio_renderer_set_volume(double volume) {
 void audio_renderer_flush() {
 }
 
+/* REditor: see header — used by the bridge's discontinuity detection */
+void audio_renderer_reset_output() {
+    if (renderer && renderer->auhal_sink) au_output_reset();
+}
+
 void audio_renderer_destroy() {
     audio_renderer_stop();
     for (int i = 0; i < NFORMATS ; i++ ) {

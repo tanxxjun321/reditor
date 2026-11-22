@@ -273,6 +273,8 @@ static std::vector<PendingPacket> g_pending_video;
 static bool                 g_have_geom = false;
 static video_geometry_t     g_last_geom = {};
 static bool                 g_last_is_h265 = false;   /* 当前会话的 codec,重建时要选回同一 codec 的 renderer */
+static unsigned short       g_last_audio_seq = 0;     /* 上个音频包 seqnum,断档检测用(仅 raop 线程访问) */
+static bool                 g_have_audio_seq = false;
 static std::atomic<bool>    g_video_rebuilding{false};
 static std::atomic<bool>    g_rebuild_scheduled{false};
 static std::atomic<bool>    g_reset_clock_on_rebuild{false};
@@ -603,6 +605,18 @@ static void cb_video_flush(void *cls)  { (void) cls; video_renderer_flush();  }
 static void cb_audio_process(void *cls, raop_ntp_t *ntp, audio_decode_struct *data) {
     (void) cls; (void) ntp;
     if (!g_running) return;
+    /* 断档检测:seqnum 前跳说明上游刚跳过一批丢包空洞(或发送端重启了音频流,
+     * 实测切换视频内容时一次丢 ~130-180 包)。紧随的积压冲刷会把输出环灌满
+     * 陈旧音频,留下甩不掉的固定滞后;先清空输出环再推,事故后从 ~0 延迟恢复。
+     * 本回调只跑在 raop UDP 线程,两个静态状态无需加锁 */
+    unsigned short seq = data->seqnum;
+    uint16_t jump = (uint16_t) (seq - g_last_audio_seq);
+    if (g_have_audio_seq && jump > 8 && jump < 0x8000) {
+        emit(AP_EV_LOG, "audio stream discontinuity, resetting output ring");
+        audio_renderer_reset_output();
+    }
+    g_last_audio_seq = seq;
+    g_have_audio_seq = true;
     uint64_t local = data->ntp_time_local ? data->ntp_time_local : get_local_time();
     map_pts(&data->ntp_time_remote, local);
     g_last_activity_ns.store(get_local_time());
@@ -999,6 +1013,7 @@ extern "C" void airplay_stop(void) {
     g_rebuild_scheduled = false;
     g_reset_clock_on_rebuild = false;
     g_video_frames_seen = false;
+    g_have_audio_seq = false;
     {
         std::lock_guard<std::mutex> lk(g_video_mtx);
         g_pending_video.clear();

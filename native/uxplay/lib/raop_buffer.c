@@ -35,6 +35,15 @@
 
 #define RAOP_BUFFER_LENGTH 256
 
+/* REditor: bound on how many frames a lost packet may stall live mirror
+ * audio before we skip the hole. Upstream waits for a FULL buffer
+ * (RAOP_BUFFER_LENGTH = 256 entries ≈ 2.8s at AAC-ELD's ~92 frames/s,
+ * ≈ 2.0s at ALAC's ~125/s) — observed as "audio delayed 2-3 seconds"
+ * after any single UDP loss. Resends on a LAN complete in tens of ms;
+ * 24 entries (≈ 0.26s AAC-ELD / 0.19s ALAC) leaves ample room for
+ * reordering + resend while keeping a hole audibly brief. */
+#define RAOP_LIVE_REORDER_WINDOW 24
+
 typedef struct {
     /* Data available */
     int filled;
@@ -246,12 +255,18 @@ raop_buffer_dequeue(raop_buffer_t *raop_buffer, unsigned int *length, uint32_t *
     if (no_resend) {
         /* If we do no resends, always return the first entry */
     } else if (!entry->filled) {
-        /* Check how much we have space left in the buffer */
-        if (entry_count < RAOP_BUFFER_LENGTH) {
+        /* REditor: wait only within the live reorder window (see define
+         * above), not for a full 256-entry buffer */
+        if (entry_count < RAOP_LIVE_REORDER_WINDOW) {
             /* Return nothing and hope resend gets on time */
             return NULL;
         }
-        /* Risk of buffer overrun, return empty buffer */
+        /* Hole outlived the window: skip it, flush the backlog */
+        logger_log(raop_buffer->logger, LOGGER_INFO,
+                   "audio reorder: skipping lost seqnum %u after %d buffered frames "
+                   "(~%d ms stall), resend did not arrive in time",
+                   raop_buffer->first_seqnum, entry_count,
+                   entry_count * 1000 / 92 /* AAC-ELD frames/s; ALAC stalls are shorter */);
     }
 
     /* Update buffer and validate entry */

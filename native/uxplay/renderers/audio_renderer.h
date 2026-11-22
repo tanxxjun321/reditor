@@ -39,6 +39,10 @@ void audio_renderer_stop();
 void audio_renderer_render_buffer(unsigned char* data, int *data_len, unsigned short *seqnum, uint64_t *ntp_time);
 void audio_renderer_set_volume(double volume);
 void audio_renderer_flush();
+/* REditor: drop stale PCM from the AUHAL output ring after a stream
+ * discontinuity (lost-packet skip / stream restart), so the recovered
+ * stream resumes at ~zero latency instead of dragging a fixed lag */
+void audio_renderer_reset_output();
 void audio_renderer_destroy();
 unsigned int audio_renderer_listen(void *loop, int id);
 #ifdef __cplusplus
